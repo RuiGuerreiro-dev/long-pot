@@ -346,13 +346,30 @@
   // ---- The computer opponent -----------------------------------------------------------------
   const LEVELS = ['beginner', 'amateur', 'pro', 'champion'];
   const LEVEL_NAME = { beginner: 'Beginner', amateur: 'Amateur', pro: 'Pro', champion: 'Champion' };
-  // How widely each level searches (shape of the search, not tuning numbers for feel)
+  // How widely each level searches (shape of the search, not tuning numbers for feel).
+  // safeFracs, safeSpeeds: the contacts its safeties try, as fractions of a ball's edge (a
+  // beginner plays them full and firm, a pro clips them thin and soft); breakOff: D spots its break-off tries (0: no planned
+  // break-off, it just hits into the pack).
   const SEARCH = {
-    beginner: { cands: 3, speeds: [1.1, 1.7], spins: [0], sideCands: 0, safeTargets: 2, kicks: 0, robust: false, place: 4 },
-    amateur: { cands: 5, speeds: [0.75, 1.2, 1.9], spins: [-0.3, 0, 0.3], sideCands: 0, safeTargets: 3, kicks: 12, robust: false, place: 8 },
-    pro: { cands: 7, speeds: [0.6, 0.95, 1.45, 2.2], spins: [-0.42, -0.12, 0.2, 0.42], sideCands: 0, safeTargets: 5, kicks: 24, robust: true, place: 12 },
-    champion: { cands: 8, speeds: [0.55, 0.85, 1.3, 1.95, 2.9], spins: [-0.45, -0.18, 0.15, 0.42], sideCands: 3, safeTargets: 6, kicks: 36, robust: true, place: 16 },
+    beginner: { cands: 3, speeds: [1.1, 1.7], spins: [0], sideCands: 0, safeTargets: 2, safeFracs: [-0.35, 0, 0.35], safeSpeeds: [1.0, 1.6], kicks: 0, robust: false, place: 4, breakOff: 0 },
+    amateur: { cands: 5, speeds: [0.75, 1.2, 1.9], spins: [-0.3, 0, 0.3], sideCands: 0, safeTargets: 3, safeFracs: [-0.6, -0.3, 0, 0.3, 0.6], safeSpeeds: [0.75, 1.1, 1.6, 2.1], kicks: 12, robust: false, place: 8, breakOff: 1 },
+    pro: { cands: 7, speeds: [0.6, 0.95, 1.45, 2.2], spins: [-0.42, -0.12, 0.2, 0.42], sideCands: 2, safeTargets: 5, safeFracs: [-0.9, -0.55, 0, 0.55, 0.9], safeSpeeds: [0.55, 0.9, 1.4, 2.1], kicks: 24, robust: true, place: 12, breakOff: 2 },
+    champion: { cands: 8, speeds: [0.55, 0.85, 1.3, 1.95, 2.9], spins: [-0.45, -0.18, 0.15, 0.42], sideCands: 3, safeTargets: 6, safeFracs: [-0.9, -0.55, 0, 0.55, 0.9], safeSpeeds: [0.55, 0.9, 1.4, 2.1], kicks: 36, robust: true, place: 16, breakOff: 2 },
   };
+  /** A level's aim error (radians, 1 sigma) for one stroke: wider the harder it is struck, the
+   *  further the tip is from centre and the more the cue has to be raised (config.js, ai_*). */
+  function aimSigma(tune, level, V0, a, b, elev) {
+    const base = tune[`ai_${level}_aim_error`] * Math.PI / 180;
+    const pace = Math.max(0, Math.min(1, (V0 - tune.cue_speed_min) / (tune.cue_speed_max - tune.cue_speed_min)));
+    const tip = Math.min(1, Math.hypot(a, b) / tune.tip_max), raise = Math.min(1, Math.max(0, elev || 0) / (40 * Math.PI / 180));
+    return base * (1 + tune.ai_pace_error * pace * pace) * (1 + tune.ai_spin_error_aim * tip) * (1 + tune.ai_raise_error * raise);
+  }
+  /** The opening shot: every red still in the triangle behind the pink, cue ball in hand. */
+  function isBreakOff(frame, sim) {
+    if (!frame.inHand || frame.phase !== 'red' || frame.freeBall) return false;
+    for (let i = 1; i <= 15; i++) if (!sim.on[i] || sim.x[i] < SPOT.pink[0] + R) return false;
+    return true;
+  }
   const CHEAP_SIM = 0.2; // a sim that stops at the first contact costs about this much of a full one
   function erf(x) { // Abramowitz-Stegun 7.1.26
     const s = Math.sign(x); x = Math.abs(x);
@@ -379,8 +396,9 @@
     const wEff = Math.max(0.002, (pk.width - 2 * R) / 2 * Math.cos(approach) * (pk.type === 'corner' ? 1 : 0.85));
     const tolObj = wEff / dTP; // object-ball direction tolerance
     const tolAim = tolObj * (2 * R * cosCut) / (dCG + 2 * R); // as cue aim tolerance
-    const p = erf(tolAim / (sigma * Math.SQRT2)) * (0.6 + 0.4 * Math.min(1, 1.5 / (dCG + dTP))); // long shots also go wrong on pace
-    return { p, aim: Math.atan2(vy, vx), ux, uy, dCG, dTP, cosCut, gx, gy };
+    const pace = 0.6 + 0.4 * Math.min(1, 1.5 / (dCG + dTP)); // long shots also go wrong on pace
+    const p = erf(tolAim / (sigma * Math.SQRT2)) * pace;
+    return { p, tol: tolAim, pace, aim: Math.atan2(vy, vx), ux, uy, dCG, dTP, cosCut, gx, gy };
   }
   /** The best geometric pot chance among the given targets (a measure of a position). */
   function bestChance(sim, targets, table, sigma, valueWeight) {
@@ -399,11 +417,14 @@
 
   /** Plans the computer's shot as a generator: each yield is one simulated shot, so the game can
    *  spread the thinking over frames. The result lands in job.result:
-   *  { place: [x, y] | null, ang, V0, a, b, kind: 'pot'|'safety', note }. */
+   *  { place: [x, y] | null, ang, V0, a, b, kind: 'pot'|'safety'|'break', target, p, intendedAng }.
+   *  It judges its chances with its aim error times ai_<level>_judgement: a beginner thinks it
+   *  aims better than it does, so it goes for pots a better player would leave. */
   function* plan(job) {
     const { live, frame, table, tune, level, h } = job;
     const S = SEARCH[level];
-    const sigma = tune[`ai_${level}_aim_error`] * Math.PI / 180;
+    const judgement = tune[`ai_${level}_judgement`];
+    const sigma = tune[`ai_${level}_aim_error`] * Math.PI / 180 * judgement; // the aim error it thinks it has
     const posW = tune[`ai_${level}_position`], safeBias = tune[`ai_${level}_safety`];
     const base = new Sim(table, N); base.copyFrom(live);
     const scratch = new Sim(table, N);
@@ -464,35 +485,47 @@
       for (const V0 of S.speeds) for (const b of S.spins) variants.push({ c, V0, b, a: 0 });
       if (ci < S.sideCands) for (const V0 of [0.85, 1.3, 1.95]) for (const b of [-0.18, 0.15]) for (const a of [-0.3, 0.3]) variants.push({ c, V0, b, a });
     });
-    for (const { c, V0, a, b } of variants) {
+    /** The cue's angle that sends the object ball along the pot line for candidate c, struck at
+     *  V0 with tip (a, b) (throw, squirt and swerve included), from ang; null if it can't. */
+    function* solveAim(c, V0, a, b, ang) {
       const want = Math.atan2(c.uy, c.ux);
+      let err0 = null, ang0 = null;
+      for (let it = 0; it < 3; it++) {
+        const r = simulate(ang, V0, a, b, true);
+        cost += CHEAP_SIM; if (cost >= 1) { cost -= 1; yield 1; }
+        if (r.firstHit !== c.t) return null;
+        let err = r.firstDir - want; while (err > Math.PI) err -= 2 * Math.PI; while (err < -Math.PI) err += 2 * Math.PI;
+        if (Math.abs(err) < 2e-5) break;
+        // how the object ball's line turns as the cue's aim turns: measured, else geometric
+        let slope = 0;
+        if (err0 !== null && Math.abs(ang - ang0) > 1e-9) slope = (err - err0) / (ang - ang0);
+        if (!slope || !isFinite(slope) || slope > -1) slope = -(c.dCG + 2 * R) / (2 * R * Math.max(0.2, c.cosCut));
+        ang0 = ang; err0 = err;
+        ang -= err / slope;
+      }
+      return ang;
+    }
+    for (const { c, V0, a, b } of variants) {
       {
-        // solve the aim so the object ball leaves on the pot line (throw and squirt included)
-        let ang = c.aim, err0 = null, ang0 = null, ok = true;
-        for (let it = 0; it < 3; it++) {
-          const r = simulate(ang, V0, a, b, true);
-          cost += CHEAP_SIM; if (cost >= 1) { cost -= 1; yield 1; }
-          if (r.firstHit !== c.t) { ok = false; break; }
-          let err = r.firstDir - want; while (err > Math.PI) err -= 2 * Math.PI; while (err < -Math.PI) err += 2 * Math.PI;
-          if (Math.abs(err) < 2e-5) break;
-          // how the object ball's line turns as the cue's aim turns: measured, else geometric
-          let slope = 0;
-          if (err0 !== null && Math.abs(ang - ang0) > 1e-9) slope = (err - err0) / (ang - ang0);
-          if (!slope || !isFinite(slope) || slope > -1) slope = -(c.dCG + 2 * R) / (2 * R * Math.max(0.2, c.cosCut));
-          ang0 = ang; err0 = err;
-          ang -= err / slope;
-        }
-        if (!ok) continue;
-        const rec = simulate(ang, V0, a, b, false); yield 1;
+        const ang = yield* solveAim(c, V0, a, b, c.aim);
+        if (ang === null) continue;
+        const rec = simulate(ang, V0, a, b, false), elev = scratch.lastElev || 0; yield 1;
         const ev = evalAfter(scratch, rec);
-        tried.push({ ang, V0, a, b, ev, c, kind: 'pot' });
+        tried.push({ ang, V0, a, b, elev, ev, c, kind: 'pot' });
       }
     }
-    // 3. turn each pot try into an expected score: its chance of going in at this level's aim
+    // 3. turn each pot try into an expected score: its chance of going in at this level's aim,
+    // for this stroke (pace, spin and a raised cue all widen it)
     for (const t of tried) {
+      t.sigma = aimSigma(tune, level, t.V0, t.a, t.b, t.elev) * judgement;
+      t.p = erf(t.c.tol / (t.sigma * Math.SQRT2)) * t.c.pace;
+      // and of missing the ball altogether (a foul): on a cut the cue ball's line passes only
+      // 2R(1 - sin cut) inside the ball's edge
+      const sinCut = Math.sqrt(Math.max(0, 1 - t.c.cosCut * t.c.cosCut));
+      const margin = 2 * R * (1 - sinCut) / Math.max(0.05, t.c.dCG);
+      const pMiss = Math.min(1 - t.p, 0.5 * (1 - erf(margin / (t.sigma * Math.SQRT2))));
       if (!t.ev.pot) { t.exp = t.ev.s - 0.4; continue; }
-      t.p = t.c.p;
-      t.exp = t.p * t.ev.s + (1 - t.p) * (-0.25 - 0.9 * 0.55);
+      t.exp = t.p * t.ev.s + (1 - t.p - pMiss) * (-0.25 - 0.9 * 0.55) + pMiss * (-1.6 - 4 / 7);
     }
     tried.sort((A, B) => B.exp - A.exp);
     if (S.robust) {
@@ -501,7 +534,7 @@
         if (!t.ev.pot) continue;
         let inCount = 1, missS = 0, n = 1;
         for (const d of [-1, 1]) {
-          const rec = simulate(t.ang + d * sigma * 1.2, t.V0, t.a, t.b, false); yield 1;
+          const rec = simulate(t.ang + d * t.sigma * 1.2, t.V0, t.a, t.b, false); yield 1;
           const ev = evalAfter(scratch, rec); n++;
           if (ev.pot) inCount++; else missS += ev.s;
         }
@@ -511,30 +544,56 @@
       tried.sort((A, B) => B.exp - A.exp);
     }
 
-    // 4. safety: contacts on the balls on, and kicks off cushions when hidden
+    // 4. the break-off (amateur and up): from beside the yellow or the green, clip the end red
+    // of the back row thin, so the cue ball comes off the top and side cushions back to baulk
     const safeties = [];
+    if (S.breakOff && isBreakOff(frame, base)) {
+      const reds = []; for (let i = 1; i <= 15; i++) reds.push(i);
+      const backX = Math.max(...reds.map(i => base.x[i]));
+      const back = reds.filter(i => base.x[i] > backX - R);
+      const ys = S.breakOff > 1 ? [-0.24, -0.16, 0.16, 0.24] : [-0.2, 0.2];
+      const fracs = S.breakOff > 1 ? [0.86, 0.94] : [0.9], speeds = S.breakOff > 1 ? [1.8, 2.3, 2.8] : [2.0, 2.5];
+      for (const py of ys) {
+        const px = BAULK_X - 0.01, side = Math.sign(py);
+        if (!base.free(px, py, 0)) continue;
+        const t = back.reduce((A, B) => (side * base.y[B] > side * base.y[A] ? B : A));
+        const dx = base.x[t] - px, dy = base.y[t] - py, d = Math.hypot(dx, dy), edge = Math.asin(Math.min(1, 2 * R / d));
+        for (const f of fracs) for (const a of S.breakOff > 1 ? [0, 0.3, -0.3] : [0]) for (const V0 of speeds) {
+          const ang = Math.atan2(dy, dx) + side * f * edge; // passes the red on its outside
+          scratch.copyFrom(base); scratch.onEvent = null; scratch.place(0, px, py);
+          scratch.strike(ang, V0, a, 0);
+          const rec = scratch.run(h, 30, false); yield 1;
+          if (!isRed(rec.firstHit)) continue;
+          const ev = evalAfter(scratch, rec);
+          const home = scratch.on[0] ? Math.max(0, Math.min(1, (BAULK_X - scratch.x[0]) / (BAULK_X + HL))) : 0; // back in baulk, near its cushion
+          safeties.push({ ang, V0, a, b: 0, elev: 0, ev, kind: 'break', place: [px, py], exp: ev.s + 0.3 * home + 0.2 });
+        }
+      }
+    }
+    // 5. safety: contacts on the balls on (full at the lower levels, thin higher up), and kicks
+    // off cushions when hidden
     const bestPot = tried[0];
-    const wantSafety = !bestPot || bestPot.exp < 0.55 + safeBias * 0.6 || frame.freeBall;
+    const wantSafety = !safeties.length && (!bestPot || bestPot.exp < 0.55 + safeBias * 0.6 || frame.freeBall);
     if (wantSafety) {
       const byDist = tg.slice().sort((A, B) => Math.hypot(base.x[A] - base.x[0], base.y[A] - base.y[0]) - Math.hypot(base.x[B] - base.x[0], base.y[B] - base.y[0]));
       const visible = byDist.filter(i => bothEdgesClear(base, i)).slice(0, S.safeTargets);
       for (const t of visible) {
         const dx = base.x[t] - base.x[0], dy = base.y[t] - base.y[0], d = Math.hypot(dx, dy), baseA = Math.atan2(dy, dx);
         const edge = Math.asin(Math.min(1, 2 * R / d));
-        for (const f of [-0.9, -0.55, 0, 0.55, 0.9]) for (const V0 of [0.55, 0.9, 1.4, 2.1]) {
+        for (const f of S.safeFracs) for (const V0 of S.safeSpeeds) {
           const ang = baseA + f * edge, b = f === 0 ? -0.2 : 0;
-          const rec = simulate(ang, V0, 0, b, false); yield 1;
+          const rec = simulate(ang, V0, 0, b, false), elev = scratch.lastElev || 0; yield 1;
           const ev = evalAfter(scratch, rec);
-          safeties.push({ ang, V0, a: 0, b, ev, kind: ev.pot ? 'pot' : 'safety', exp: ev.s + safeBias });
+          safeties.push({ ang, V0, a: 0, b, elev, ev, kind: ev.pot ? 'pot' : 'safety', exp: ev.s + safeBias });
         }
       }
       if (!visible.length || frame.freeBall) {
         const kicks = Math.max(8, S.kicks);
         for (let k = 0; k < kicks; k++) for (const V0 of [1.0, 1.8]) {
           const ang = 2 * Math.PI * k / kicks;
-          const rec = simulate(ang, V0, 0, 0, false); yield 1;
+          const rec = simulate(ang, V0, 0, 0, false), elev = scratch.lastElev || 0; yield 1;
           const ev = evalAfter(scratch, rec);
-          safeties.push({ ang, V0, a: 0, b: 0, ev, kind: 'safety', exp: ev.s + safeBias });
+          safeties.push({ ang, V0, a: 0, b: 0, elev, ev, kind: 'safety', exp: ev.s + safeBias });
         }
       }
     }
@@ -542,20 +601,30 @@
     let pick = all[0];
     if (!pick) { // nothing found at all: roll toward the nearest ball on
       const t = tg[0] || 1;
-      pick = { ang: Math.atan2(base.y[t] - base.y[0], base.x[t] - base.x[0]), V0: 1.2, a: 0, b: 0, kind: 'safety' };
+      pick = { ang: Math.atan2(base.y[t] - base.y[0], base.x[t] - base.x[0]), V0: 1.2, a: 0, b: 0, elev: 0, kind: 'safety' };
     }
-    // 5. this level's hands: the shot as it is actually played
+    // 6. this level's hands: the shot as it is actually played, its aim error as wide as this
+    // stroke makes it, and now and then (ai_<level>_mishit) a stroke that goes badly wrong
     const rng = job.rng;
-    const pe = tune[`ai_${level}_power_error`], se = tune[`ai_${level}_spin_error`];
+    const bad = rng() < tune[`ai_${level}_mishit`] ? tune.ai_mishit_scale : 1;
+    const pe = tune[`ai_${level}_power_error`] * bad, se = tune[`ai_${level}_spin_error`] * bad;
     const lim = tune.tip_max;
     const clampTip = (a, b) => { const r = Math.hypot(a, b); return r > lim ? [a / r * lim, b / r * lim] : [a, b]; };
     const [a, b] = clampTip(pick.a + gauss(rng) * se, pick.b + gauss(rng) * se);
+    const V0 = Math.max(0.2, pick.V0 * (1 + gauss(rng) * pe));
+    // the side it actually puts on squirts the ball: a good player allows for it by feel
+    // (ai_<level>_feel: 1 all of it, 0 none, as a beginner who never knows it put side on)
+    let ang = pick.ang;
+    const feel = tune[`ai_${level}_feel`];
+    if (pick.kind === 'pot' && pick.c && feel > 0 && Math.abs(a - pick.a) > 1e-4) {
+      const solved = yield* solveAim(pick.c, V0, a, b, pick.ang);
+      if (solved !== null) ang += feel * (solved - pick.ang);
+    }
     job.result = {
-      place, kind: pick.kind,
-      ang: pick.ang + gauss(rng) * sigma,
-      V0: Math.max(0.2, pick.V0 * (1 + gauss(rng) * pe)),
-      a, b,
-      intendedAng: pick.ang,
+      place: pick.place || place, kind: pick.kind,
+      ang: ang + gauss(rng) * aimSigma(tune, level, pick.V0, pick.a, pick.b, pick.elev) * bad,
+      V0, a, b,
+      intendedAng: pick.ang, target: pick.c ? pick.c.t : -1, p: pick.p === undefined ? 1 : pick.p, mishit: bad > 1,
     };
   }
 

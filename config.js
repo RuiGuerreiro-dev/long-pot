@@ -69,8 +69,8 @@ window.CONFIG = {
   guide_line_width: { value: 3, min: 1.5, max: 8, step: 0.5 },        // the aim line's width, mm
   guide_obj_len_ghost: { value: 0.6, min: 0.1, max: 1.5, step: 0.05 }, // the object ball's line, ghost-ball guide, m (stops at the cushion)
   guide_obj_len_full: { value: 1.1, min: 0.2, max: 2, step: 0.05 },  // the object ball's line, full guide, m (stops at the cushion)
-  obj_line_width: { value: 9, min: 2, max: 16, step: 0.5 },           // the object ball's line's width, mm (faces the camera, with a dark edge and an arrowhead; faint through a ball in front)
-  obj_line_flow: { value: 0.25, min: 0, max: 1, step: 0.05 },         // how fast the dashes on the object ball's line drift the way it will run, m/s (0: still)
+  obj_line_width: { value: 3.5, min: 1.5, max: 12, step: 0.5 },       // the object ball's line's width, mm (at least the cue ball's line's; it faces the camera, faint through a ball in front)
+  obj_line_opacity: { value: 0.75, min: 0.2, max: 1, step: 0.05 },    // the object ball's line without the assist (0.9 with it)
   cone_from: { value: 30, min: 0, max: 80, step: 1 },                 // cut angle where the object ball's line starts to open into a cone, degrees
   cone_to: { value: 75, min: 10, max: 89, step: 1 },                  // cut angle where the cone is widest, degrees
   cone_max: { value: 9, min: 0, max: 25, step: 0.5 },                 // the cone's widest half-angle, degrees
@@ -87,15 +87,31 @@ window.CONFIG = {
   assist_path_len: { value: 0.3, min: 0.05, max: 2, step: 0.05 },     // how much of the cue ball's path after contact the assist shows, m
 
   // ---- Computer opponent (one row per difficulty: Beginner, Amateur, Pro, Champion) ----
-  ai_beginner_aim_error: { value: 0.9, min: 0, max: 3, step: 0.01 },  // aim error, degrees (1 sigma)
-  ai_amateur_aim_error: { value: 0.42, min: 0, max: 3, step: 0.01 },
-  ai_pro_aim_error: { value: 0.14, min: 0, max: 3, step: 0.01 },
-  ai_champion_aim_error: { value: 0.06, min: 0, max: 3, step: 0.01 },
+  ai_beginner_aim_error: { value: 0.22, min: 0, max: 3, step: 0.01 }, // aim error, degrees (1 sigma), on a gentle centre-ball stroke
+  ai_amateur_aim_error: { value: 0.09, min: 0, max: 3, step: 0.01 },
+  ai_pro_aim_error: { value: 0.035, min: 0, max: 3, step: 0.005 },
+  ai_champion_aim_error: { value: 0.022, min: 0, max: 3, step: 0.005 },
+  ai_pace_error: { value: 1, min: 0, max: 3, step: 0.05 },             // aim error grows with pace: x(1 + this) at full power
+  ai_spin_error_aim: { value: 0.6, min: 0, max: 3, step: 0.05 },       // and with spin: x(1 + this) with the tip at its furthest
+  ai_raise_error: { value: 1, min: 0, max: 3, step: 0.05 },            // and with the cue raised: x(1 + this) at 40 degrees
+  ai_beginner_judgement: { value: 0.5, min: 0.2, max: 1.5, step: 0.05 }, // how it rates its own aim: < 1 thinks it aims better than it does (goes for pots it misses)
+  ai_amateur_judgement: { value: 0.75, min: 0.2, max: 1.5, step: 0.05 },
+  ai_pro_judgement: { value: 0.95, min: 0.2, max: 1.5, step: 0.05 },
+  ai_champion_judgement: { value: 1, min: 0.2, max: 1.5, step: 0.05 },
+  ai_beginner_mishit: { value: 0.08, min: 0, max: 0.5, step: 0.005 },  // chance a stroke goes badly wrong (every error x ai_mishit_scale)
+  ai_amateur_mishit: { value: 0.035, min: 0, max: 0.5, step: 0.005 },
+  ai_pro_mishit: { value: 0.01, min: 0, max: 0.5, step: 0.005 },
+  ai_champion_mishit: { value: 0.004, min: 0, max: 0.5, step: 0.001 },
+  ai_mishit_scale: { value: 3, min: 1, max: 8, step: 0.5 },
+  ai_beginner_feel: { value: 0.35, min: 0, max: 1, step: 0.05 },      // how much of the side it puts on by mistake it allows for (a pot's squirt and swerve): 1 all
+  ai_amateur_feel: { value: 0.6, min: 0, max: 1, step: 0.05 },
+  ai_pro_feel: { value: 0.95, min: 0, max: 1, step: 0.05 },
+  ai_champion_feel: { value: 1, min: 0, max: 1, step: 0.05 },
   ai_beginner_power_error: { value: 0.14, min: 0, max: 0.5, step: 0.01 }, // power error, fraction (1 sigma)
   ai_amateur_power_error: { value: 0.08, min: 0, max: 0.5, step: 0.01 },
   ai_pro_power_error: { value: 0.035, min: 0, max: 0.5, step: 0.005 },
   ai_champion_power_error: { value: 0.02, min: 0, max: 0.5, step: 0.005 },
-  ai_beginner_spin_error: { value: 0.1, min: 0, max: 0.3, step: 0.005 },  // tip placement error, ball radii
+  ai_beginner_spin_error: { value: 0.07, min: 0, max: 0.3, step: 0.005 },  // tip placement error, ball radii
   ai_amateur_spin_error: { value: 0.06, min: 0, max: 0.3, step: 0.005 },
   ai_pro_spin_error: { value: 0.03, min: 0, max: 0.3, step: 0.005 },
   ai_champion_spin_error: { value: 0.015, min: 0, max: 0.3, step: 0.005 },
@@ -103,12 +119,29 @@ window.CONFIG = {
   ai_amateur_position: { value: 0.35, min: 0, max: 2, step: 0.05 },
   ai_pro_position: { value: 0.9, min: 0, max: 2, step: 0.05 },
   ai_champion_position: { value: 1.2, min: 0, max: 2, step: 0.05 },
-  ai_beginner_safety: { value: -0.7, min: -2, max: 1, step: 0.05 },   // bias toward safety play (negative: goes for pots)
-  ai_amateur_safety: { value: -0.3, min: -2, max: 1, step: 0.05 },
+  ai_beginner_safety: { value: -0.9, min: -2, max: 1, step: 0.05 },   // bias toward safety play (negative: goes for pots)
+  ai_amateur_safety: { value: -0.45, min: -2, max: 1, step: 0.05 },
   ai_pro_safety: { value: 0, min: -2, max: 1, step: 0.05 },
   ai_champion_safety: { value: 0.08, min: -2, max: 1, step: 0.05 },
   ai_sims_per_step: { value: 6, min: 1, max: 40, step: 1 },           // shots the computer tries per game step while it thinks
-  ai_think_min: { value: 1.1, min: 0, max: 5, step: 0.1 },            // shortest thinking pause, seconds
+  ai_think_min: { value: 0.6, min: 0, max: 5, step: 0.1 },            // shortest thinking pause, seconds
+  ai_think_hard: { value: 1.2, min: 0, max: 4, step: 0.1 },           // a hard pot, a safety or the break-off: thinks up to x(1 + this) as long
+  ai_beginner_think: { value: 0.7, min: 0, max: 5, step: 0.1 },       // how long it studies an easy pot, seconds (varies 20% either way)
+  ai_amateur_think: { value: 1.1, min: 0, max: 5, step: 0.1 },
+  ai_pro_think: { value: 1.4, min: 0, max: 5, step: 0.1 },
+  ai_champion_think: { value: 1.2, min: 0, max: 5, step: 0.1 },
+  ai_beginner_tempo: { value: 0.75, min: 0.3, max: 2, step: 0.05 },   // how unhurried it gets down and strikes (below 1: rushed)
+  ai_amateur_tempo: { value: 0.9, min: 0.3, max: 2, step: 0.05 },
+  ai_pro_tempo: { value: 1.1, min: 0.3, max: 2, step: 0.05 },
+  ai_champion_tempo: { value: 1, min: 0.3, max: 2, step: 0.05 },
+  ai_beginner_feathers: { value: 1, min: 0, max: 6, step: 1 },        // practice strokes before the back-swing
+  ai_amateur_feathers: { value: 2, min: 0, max: 6, step: 1 },
+  ai_pro_feathers: { value: 3, min: 0, max: 6, step: 1 },
+  ai_champion_feathers: { value: 2, min: 0, max: 6, step: 1 },
+  ai_beginner_sighting: { value: 1.4, min: 0, max: 5, step: 0.05 },   // how far past the line the cue swings before it settles, degrees (looks only)
+  ai_amateur_sighting: { value: 0.7, min: 0, max: 5, step: 0.05 },
+  ai_pro_sighting: { value: 0.3, min: 0, max: 5, step: 0.05 },
+  ai_champion_sighting: { value: 0.2, min: 0, max: 5, step: 0.05 },
 
   // ---- Referee ----
   miss_attempt_gap: { value: 0.08, min: 0, max: 0.4, step: 0.01 },    // snookered: a failed escape is a fair attempt (no miss) if the cue ball came this close to a ball on, m

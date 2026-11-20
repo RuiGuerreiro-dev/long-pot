@@ -48,7 +48,7 @@ const CONTROLS = TOUCH ? [
   'Only the cue on the right strikes: pull it down, then let go. Further is harder.',
   'Tap or drag on the cue-ball diagram: where the tip hits.',
   'Two fingers: turn round the table. Pinch: zoom. Top view: for reading the table, not for playing.',
-  'The walk button: the left finger looks round, the right finger walks.',
+  'The walk button: the left finger walks, the right finger looks round.',
   'Menu: pause. The back gesture pauses too.',
 ] : [
   'Drag sideways to aim (Shift: fine). The arrow keys aim too.',
@@ -195,12 +195,12 @@ function hudAt(lx, ly) {
   const pad = TOUCH ? 12 : 0;
   return hudHits.some(h => lx >= h.x - pad && lx <= h.x + h.w + pad && ly >= h.y - pad && ly <= h.y + h.h + pad);
 }
-/** Walking: a finger on the left half looks round, one on the right half walks (a stick from
- *  where it lands); the mouse drags to look. */
+/** Walking: a finger on the left half walks (a stick from where it lands), one on the right half
+ *  looks round; the mouse drags to look. */
 function walkDown(e, lx, ly) {
   const id = e.pointerId;
-  if (e.pointerType !== 'touch' || lx < W / 2) { if (walkIn.look == null) { walkIn.look = id; walkIn.lx = lx; walkIn.ly = ly; } }
-  else if (walkIn.move == null) { walkIn.move = id; walkIn.ox = lx; walkIn.oy = ly; walkIn.jx = walkIn.jy = 0; }
+  if (e.pointerType === 'touch' && lx < W / 2) { if (walkIn.move == null) { walkIn.move = id; walkIn.ox = lx; walkIn.oy = ly; walkIn.jx = walkIn.jy = 0; } }
+  else if (walkIn.look == null) { walkIn.look = id; walkIn.lx = lx; walkIn.ly = ly; }
 }
 const WALK_STICK = 70; // logical pixels from where the walking finger lands to full speed
 canvas.addEventListener('pointermove', e => {
@@ -599,47 +599,36 @@ aimStrip.visible = false; aimStrip.frustumCulled = false; world.add(aimStrip);
 const pathMat = new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
 const pathMesh = new THREE.Mesh(new THREE.BufferGeometry(), pathMat);
 pathMesh.visible = false; pathMesh.frustumCulled = false; world.add(pathMesh);
-// The object ball's line: bold gold with a dark edge so it reads on the green, an arrowhead,
-// dashes that drift the way the ball will run, and a ring under the ball it starts from. It
-// turns its width to the camera (a strip lying flat on the cloth all but vanishes when it runs
-// across the view), and where a ball stands in front of it, it shows through faintly.
-const OBJ_GOLD = 0xffd447;
-const overlayMat = (color, opacity, map, xray) => new THREE.MeshBasicMaterial({ color, opacity, map: map || null, transparent: true, depthTest: !xray, depthWrite: false, side: THREE.DoubleSide });
-const flowTex = (() => {
-  const c = document.createElement('canvas'); c.width = 64; c.height = 4;
-  const g = c.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, 22, 4);
-  const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; return t;
-})();
-const objEdgeMat = overlayMat(0x06120a, 0.55), objMat = overlayMat(OBJ_GOLD, 0.95), objFlowMat = overlayMat(0xffffff, 0.55, flowTex);
-const coneFillMat = overlayMat(OBJ_GOLD, 0.26);
-/** A mesh drawn over everything, its vertices rewritten in place each frame (room for 16). */
+// The object ball's line: a thin, soft gold line in the cue ball's line's style, and a faint ring
+// under the ball it starts from. It turns its width to the camera (a strip lying flat on the
+// cloth all but vanishes when it runs across the view), and where a ball stands in front of it,
+// it shows through faintly.
+const OBJ_GOLD = 0xffe7a0;
+const overlayMat = (color, opacity, xray) => new THREE.MeshBasicMaterial({ color, opacity, transparent: true, depthTest: !xray, depthWrite: false, side: THREE.DoubleSide });
+const objMat = overlayMat(OBJ_GOLD, 0.8), coneFillMat = overlayMat(OBJ_GOLD, 0.16);
+/** A mesh drawn on the cloth, its vertices rewritten in place each frame (room for 16). */
 function overlay(mat, order) {
   const g = new THREE.BufferGeometry(), n = 16;
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
-  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2).setUsage(THREE.DynamicDrawUsage));
   g.setIndex(new THREE.BufferAttribute(new Uint16Array(n * 3), 1).setUsage(THREE.DynamicDrawUsage));
   const m = new THREE.Mesh(g, mat); m.renderOrder = order; m.visible = false; m.frustumCulled = false; world.add(m);
   return m;
 }
-const objEdge = overlay(objEdgeMat, 20), objCore = overlay(objMat, 21), objFlow = overlay(objFlowMat, 22);
-const objXray = new THREE.Mesh(objCore.geometry, overlayMat(OBJ_GOLD, 0.4, null, true)); // the core again, seen through balls
+const objCore = overlay(objMat, 21);
+const objXray = new THREE.Mesh(objCore.geometry, overlayMat(OBJ_GOLD, 0.25, true)); // the line again, seen through balls
 objXray.renderOrder = 18; objXray.visible = false; objXray.frustumCulled = false; world.add(objXray);
-const objRing = new THREE.Mesh(new THREE.RingGeometry(R * 1.1, R * 1.38, 48), new THREE.MeshBasicMaterial({ color: OBJ_GOLD, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }));
+const objRing = new THREE.Mesh(new THREE.RingGeometry(R * 1.12, R * 1.26, 48), new THREE.MeshBasicMaterial({ color: OBJ_GOLD, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide }));
 objRing.rotation.x = -Math.PI / 2; objRing.visible = false; world.add(objRing);
-// On a hard cut the line opens into a cone: a flat wedge from the ball's edge, outlined.
+// On a hard cut the line opens into a cone: a faint wedge from the ball's edge, its two sides drawn.
 const coneMesh = overlay(coneFillMat, 19);
-// Writing an overlay mesh: begin, then lines (a quad whose width faces the camera) and heads.
+// Writing an overlay mesh: begin, then lines (a quad whose width faces the camera), then end.
 const ovl = { mesh: null, nv: 0, ni: 0 }, _p = new THREE.Vector3(), _d = new THREE.Vector3(), _n = new THREE.Vector3();
 function ovlBegin(mesh) { ovl.mesh = mesh; ovl.nv = 0; ovl.ni = 0; }
-function ovlVert(v, u, t) {
-  const g = ovl.mesh.geometry, i = ovl.nv++;
-  g.attributes.position.array.set([v.x, v.y, v.z], i * 3); g.attributes.uv.array.set([u, t], i * 2);
-  return i;
-}
+function ovlVert(v) { const i = ovl.nv++; ovl.mesh.geometry.attributes.position.array.set([v.x, v.y, v.z], i * 3); return i; }
 function ovlTri(i, j, k) { const I = ovl.mesh.geometry.index.array; I[ovl.ni++] = i; I[ovl.ni++] = j; I[ovl.ni++] = k; }
 function ovlEnd() {
   const g = ovl.mesh.geometry;
-  g.attributes.position.needsUpdate = g.attributes.uv.needsUpdate = g.index.needsUpdate = true;
+  g.attributes.position.needsUpdate = g.index.needsUpdate = true;
   g.setDrawRange(0, ovl.ni); ovl.mesh.visible = true;
   if (ovl.mesh === objCore) objXray.visible = true;
 }
@@ -649,53 +638,28 @@ function faceDir(p, d) {
   const l = _n.length(); return l > 1e-9 ? _n.multiplyScalar(1 / l) : _n.set(0, 1, 0);
 }
 const OVL_Z = 0.0016;
-/** A line on the cloth from (ax, ay) to (bx, by), w wide on screen, uv u0..u1 along it. Turned
- *  to face the camera it stands partly up, so it is raised until its lower edge is on the cloth. */
-function ovlLine(ax, ay, bx, by, w, u0 = 0, u1 = 1) {
+/** A line on the cloth from (ax, ay) to (bx, by), w wide on screen. Turned to face the camera it
+ *  stands partly up, so it is raised until its lower edge is on the cloth. */
+function ovlLine(ax, ay, bx, by, w) {
   const A = V3(ax, ay, OVL_Z), B = V3(bx, by, OVL_Z);
   _d.subVectors(B, A).normalize();
   const n = faceDir(A.clone().add(B).multiplyScalar(0.5), _d).clone().multiplyScalar(w / 2);
   A.y += Math.abs(n.y); B.y += Math.abs(n.y);
-  const i = ovlVert(A.clone().add(n), u0, 1), j = ovlVert(A.clone().sub(n), u0, 0);
-  const k = ovlVert(B.clone().add(n), u1, 1), l = ovlVert(B.clone().sub(n), u1, 0);
+  const i = ovlVert(A.clone().add(n)), j = ovlVert(A.clone().sub(n)), k = ovlVert(B.clone().add(n)), l = ovlVert(B.clone().sub(n));
   ovlTri(i, j, k); ovlTri(j, l, k);
 }
-/** An arrowhead: base centred on (bx, by), half as wide as H on each side, its tip at (tx, ty). */
-function ovlHead(bx, by, tx, ty, H) {
-  const Bv = V3(bx, by, OVL_Z), T = V3(tx, ty, OVL_Z);
-  _d.subVectors(T, Bv).normalize();
-  const n = faceDir(Bv, _d).clone().multiplyScalar(H);
-  Bv.y += Math.abs(n.y); T.y += Math.abs(n.y) * 0.5;
-  ovlTri(ovlVert(Bv.clone().add(n), 0, 0), ovlVert(Bv.clone().sub(n), 0, 0), ovlVert(T, 0, 0));
-}
-const FLOW_GAP = 0.07; // one dash and its gap along the object ball's line, m
-/** The object ball's arrow from (sx, sy) along ang, len long and w wide: the dark edge, the gold
- *  line with its head, and the drifting dashes on its shaft. */
-function setObjArrow(sx, sy, ang, len, w) {
-  const ux = Math.cos(ang), uy = Math.sin(ang), hl = Math.min(len * 0.4, w * 3.4), hw = w * 2;
-  const shaft = len - hl, e = w * 0.5;
-  for (const [mesh, grow] of [[objEdge, e], [objCore, 0]]) {
-    ovlBegin(mesh);
-    ovlLine(sx - ux * grow, sy - uy * grow, sx + ux * shaft, sy + uy * shaft, w + 2 * grow);
-    const bx = sx + ux * (shaft - grow), by = sy + uy * (shaft - grow), tip = len + 1.6 * grow;
-    ovlHead(bx, by, sx + ux * tip, sy + uy * tip, hw + 1.6 * grow);
-    ovlEnd();
-  }
-  ovlBegin(objFlow); ovlLine(sx, sy, sx + ux * shaft, sy + uy * shaft, w, 0, shaft / FLOW_GAP); ovlEnd();
+/** The object ball's line from (sx, sy) along ang, len long and w wide. */
+function setObjLine(sx, sy, ang, len, w) {
+  ovlBegin(objCore); ovlLine(sx, sy, sx + Math.cos(ang) * len, sy + Math.sin(ang) * len, w); ovlEnd();
 }
 /** The cone: a wedge from (ax, ay) along ang, len long, opening half each side (radians), filled
- *  faintly and outlined in gold with the dark edge. */
+ *  faintly, its two sides drawn as the line is. */
 function setCone(ax, ay, ang, len, half, w) {
   const l = [ax + Math.cos(ang + half) * len, ay + Math.sin(ang + half) * len], r = [ax + Math.cos(ang - half) * len, ay + Math.sin(ang - half) * len];
   ovlBegin(coneMesh);
-  ovlTri(ovlVert(V3(ax, ay, 0.0015), 0, 0), ovlVert(V3(r[0], r[1], 0.0015), 0, 0), ovlVert(V3(l[0], l[1], 0.0015), 0, 0));
+  ovlTri(ovlVert(V3(ax, ay, 0.0015)), ovlVert(V3(r[0], r[1], 0.0015)), ovlVert(V3(l[0], l[1], 0.0015)));
   ovlEnd();
-  for (const [mesh, grow] of [[objEdge, w * 0.5], [objCore, 0]]) {
-    ovlBegin(mesh);
-    const lw = w * 0.6 + 2 * grow;
-    ovlLine(ax, ay, l[0], l[1], lw); ovlLine(ax, ay, r[0], r[1], lw);
-    ovlEnd();
-  }
+  ovlBegin(objCore); ovlLine(ax, ay, l[0], l[1], w * 0.8); ovlLine(ax, ay, r[0], r[1], w * 0.8); ovlEnd();
 }
 /** Rebuilds a strip mesh through pts ([x, y] on the cloth), width metres wide. */
 function setStrip(mesh, pts, width) {
@@ -794,7 +758,7 @@ function liftAimScale() {
 
 // Walking round the table: a free eye at a fixed height that looks round and walks, in a band
 // round the table (walk_gap to walk_reach out from the rail), never over it. Phone: the left
-// finger looks, the right finger walks (a stick from where it lands). Mouse: drag to look,
+// finger walks (a stick from where it lands), the right finger looks. Mouse: drag to look,
 // W A S D or the arrows to walk.
 const walkIn = { look: null, move: null, lx: 0, ly: 0, ox: 0, oy: 0, jx: 0, jy: 0 };
 const railHalf = () => [table.HL + table.CW + LP.SPEC.RAIL_W, table.HW + table.CW + LP.SPEC.RAIL_W];
@@ -837,7 +801,7 @@ function endWalk() {
   else if (state.phase === 'roll') cam.mode = 'watch';
   else camForTurn();
 }
-/** One game step of walking: the right finger's stick, or W A S D and the arrows. */
+/** One game step of walking: the left finger's stick, or W A S D and the arrows. */
 function walkMove(dt) {
   const w = cam.walk; if (!w) return;
   const sp = tune.walk_speed * dt;
@@ -1017,6 +981,31 @@ function onSimEvent(kind, i, j, speed) {
 }
 
 // The computer's turn: think (spread over steps), place, address the ball, strike.
+/** How long the computer studies the table once it knows its shot: its level's pace
+ *  (ai_<level>_think), longer for a hard pot, a safety or the break-off, never quite the same. */
+function aiThinkTime(res) {
+  const L = state.aiLevel, hard = res.kind === 'pot' ? 1 - Math.min(1, Math.max(0, res.p)) : res.kind === 'break' ? 0.6 : 1;
+  return Math.max(tune.ai_think_min, tune[`ai_${L}_think`] * (1 + tune.ai_think_hard * hard) * (0.8 + 0.4 * rng()));
+}
+/** How the computer gets down on the shot, by its level: the cue swings onto the line and past it
+ *  by up to ai_<level>_sighting degrees, settles on the line it will strike, takes
+ *  ai_<level>_feathers practice strokes, then the back-swing, a pause at the back that grows with
+ *  the strokes, and the strike; ai_<level>_tempo stretches it all (below 1: rushed). */
+function aiAddressPlan(res) {
+  const L = state.aiLevel, k = tune[`ai_${L}_tempo`], n = Math.max(0, Math.round(tune[`ai_${L}_feathers`]));
+  const pw = Math.min(1, Math.pow(Math.max(0, (res.V0 - tune.cue_speed_min) / (tune.cue_speed_max - tune.cue_speed_min)), 1 / tune.power_curve));
+  const over = (rng() * 2 - 1) * tune[`ai_${L}_sighting`] * Math.PI / 180;
+  const T = { sight: 0.45 * k, settle: 0.3 * k, n, feather: 0.36 * k, back: 0.45 * k, pause: Math.max(0, n - 1) * 0.1 * k, strike: 0.07 };
+  return { T, from: state.aim, to: res.ang, over, pw, amp: 0.06 + 0.12 * pw };
+}
+/** What the computer is about to play, for the hint line while it gets down on the shot. */
+function aiIntent() {
+  const r = aiJob && aiJob.result;
+  if (!r) return '';
+  if (r.kind === 'break') return 'The computer breaks off';
+  if (r.kind === 'pot') return r.target > 0 ? `The computer goes for the ${LP.NAME[LP.KIND[r.target]].toLowerCase()}` : 'The computer goes for a pot';
+  return 'The computer plays safe';
+}
 function startAITurn() {
   state.human = false;
   const deficit = frame.scores[0] - frame.scores[1], left = frame.pointsLeft(sim);
@@ -1024,7 +1013,7 @@ function startAITurn() {
     frame.over = true; frame.winner = 0; state.conceded = 'computer'; finishFrame(); return;
   }
   sim.setParams(physParams());
-  state.phase = 'aiThink'; state.phaseT = 0;
+  state.phase = 'aiThink'; state.phaseT = 0; state.aiThinkFor = null;
   aiJob = { live: sim, frame, table, tune, level: state.aiLevel, h: STEP / tune.physics_substeps, rng };
   aiJob.gen = LP.plan(aiJob);
   if (!frame.inHand) { pointAtNearest(); }
@@ -1292,7 +1281,7 @@ const colLine = new THREE.Color(0xffffff), colHard = new THREE.Color(0xff3b30);
 function updateGuides() {
   for (const r of ribbons) r.visible = false; ghost.visible = false; ghostRing.visible = false;
   pathMesh.visible = false; aimStrip.visible = false; coneMesh.visible = false;
-  objEdge.visible = objCore.visible = objFlow.visible = objXray.visible = objRing.visible = false;
+  objCore.visible = objXray.visible = objRing.visible = false;
   const g = state.guide;
   // the guide shows only in the aim view: the top view and walking are for reading the table
   const showing = scene === 'play' && state.human && (state.phase === 'aim' || state.phase === 'strike') && cam.mode === 'aim' && !cam.free;
@@ -1332,13 +1321,13 @@ function updateGuides() {
   const cy = uy > 0 ? (table.HW - R - oy) / uy : uy < 0 ? (-table.HW + R - oy) / uy : Infinity;
   const L = Math.min(g === 'full' ? tune.guide_obj_len_full : tune.guide_obj_len_ghost, Math.min(cx, cy) - R);
   objRing.visible = true; objRing.position.copy(V3(ox, oy, 0.0012));
-  const sx = ox + ux * R, sy = oy + uy * R, ow = tune.obj_line_width / 1000;
+  const sx = ox + ux * R, sy = oy + uy * R, ow = Math.max(w, tune.obj_line_width / 1000); // as wide as the cue ball's line, at least
+  objMat.opacity = assist ? 0.9 : tune.obj_line_opacity;
   const k = Math.max(0, Math.min(1, (q.cut * 180 / Math.PI - tune.cone_from) / Math.max(1, tune.cone_to - tune.cone_from)));
   const half = tune.cone_max * Math.PI / 180 * k * k * (3 - 2 * k);
-  flowTex.offset.x = -((state.t * tune.obj_line_flow / FLOW_GAP) % 1);
   if (L > 0.02) {
     if (half > 0.004) setCone(sx, sy, q.objDir, L, half, ow);
-    else setObjArrow(sx, sy, q.objDir, L, ow);
+    else setObjLine(sx, sy, q.objDir, L, ow);
   }
   if (g === 'full' && q.thin > 0.05 && !path) setRibbon(ribbons[2], q.gx, q.gy, q.gx + q.tgx * 0.28 * q.thin, q.gy + q.tgy * 0.28 * q.thin, w * 0.8);
 }
@@ -1750,8 +1739,8 @@ function drawWalkSticks() {
   if (!TOUCH) return;
   const r = 54, y = H - 170;
   const ring = (x, yy, rr, a) => { ctx.beginPath(); ctx.arc(x, yy, rr, 0, Math.PI * 2); ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.lineWidth = 2; ctx.stroke(); };
-  if (walkIn.look == null) { ring(170, y, r, 0.28); caps('Look', 170, y, 12, UI.dim, 'center'); }
-  if (walkIn.move == null) { ring(W - 170, y, r, 0.28); caps('Walk', W - 170, y, 12, UI.dim, 'center'); }
+  if (walkIn.look == null) { ring(W - 170, y, r, 0.28); caps('Look', W - 170, y, 12, UI.dim, 'center'); }
+  if (walkIn.move == null) { ring(170, y, r, 0.28); caps('Walk', 170, y, 12, UI.dim, 'center'); }
   else {
     ring(walkIn.ox, walkIn.oy, WALK_STICK, 0.4);
     ctx.beginPath(); ctx.arc(walkIn.ox + walkIn.jx * WALK_STICK, walkIn.oy + walkIn.jy * WALK_STICK, 22, 0, Math.PI * 2);
@@ -1773,11 +1762,12 @@ function drawPlayHUD() {
   if (walking) drawWalkSticks();
   const ph = state.phase;
   let hint = '';
-  if (walking) hint = TOUCH ? 'Walking: the left finger looks round, the right finger walks · the walk button takes you back' : 'Walking: drag to look round, W A S D to walk · F takes you back';
+  if (walking) hint = TOUCH ? 'Walking: the left finger walks, the right finger looks round · the walk button takes you back' : 'Walking: drag to look round, W A S D to walk · F takes you back';
   else if (ph === 'place') hint = TOUCH ? 'Ball in hand: drag the cue ball inside the D, then Place' : 'Ball in hand: drag the cue ball inside the D (or the arrows), then Enter';
   else if (ph === 'aim' && state.human && cam.mode === 'top') hint = 'Top view: for reading the table · go back to the aim view to play';
   else if (ph === 'aim' && !hintSeen) hint = TOUCH ? 'Swipe sideways to aim, down to look from higher · pull the cue on the right to strike' : 'Drag sideways to aim · hold, pull down, push up to strike (or hold Space)';
   else if (ph === 'aiThink') hint = 'The computer is studying the table';
+  else if (ph === 'aiAddress') hint = aiIntent();
   if (hint) text(hint, W / 2, state.mode === 'frame' ? H - 106 : H - 28, 14, UI.dim, 'center', FONT, '500');
   if (ph === 'place' && !walking) button('Place', W / 2 - 90, H - (state.mode === 'frame' ? 172 : 96) - (TOUCH ? 8 : 0), 180, TOUCH ? 52 : 44, confirmPlace, { primary: true, key: 'Enter' });
   if (ph === 'choice') {
@@ -1963,23 +1953,30 @@ const scenes = {
         let done = false;
         for (let k = 0; k < tune.ai_sims_per_step; k++) { const r = aiJob.gen.next(); if (r.done) { done = true; break; } }
         if (aiJob.result && !done) done = true;
-        if (done && state.phaseT >= tune.ai_think_min) {
+        if (done && state.aiThinkFor == null) state.aiThinkFor = aiThinkTime(aiJob.result);
+        if (done && state.phaseT >= state.aiThinkFor) {
           const res = aiJob.result;
           if (res.place) { sim.place(0, res.place[0], res.place[1]); frame.inHand = false; }
-          state.aiFrom = state.aim; state.aiTo = res.intendedAng; state.tipA = res.a; state.tipB = res.b;
+          state.tipA = res.a; state.tipB = res.b;
+          state.aiPlan = aiAddressPlan(res);
           state.phase = 'aiAddress'; state.phaseT = 0; state.aiPull = 0.05;
           if (cam.mode !== 'walk') cam.mode = 'aim'; cam.pitchOff = 0.1;
         }
       } else if (ph === 'aiAddress') {
-        const t = state.phaseT, res = aiJob.result;
-        const k = Math.min(1, t / 0.6), e = k * k * (3 - 2 * k);
-        state.aim = angLerp(state.aiFrom, state.aiTo, e);
-        const pw = Math.min(1, Math.pow(Math.max(0, (res.V0 - tune.cue_speed_min) / (tune.cue_speed_max - tune.cue_speed_min)), 1 / tune.power_curve));
-        state.power = pw;
-        if (t < 0.6) state.aiPull = 0.05;
-        else if (t < 1.15) state.aiPull = 0.05 + (pw * 0.8 + 0.1) * Math.sin((t - 0.6) / 0.55 * Math.PI / 2);
-        else state.aiPull = Math.max(0, (pw * 0.8 + 0.15) * (1 - (t - 1.15) / 0.07));
-        if (t >= 1.22) { state.aim = res.ang; strikeNow({ ang: res.ang, V0: res.V0, a: res.a, b: res.b }); }
+        const res = aiJob.result, A = state.aiPlan, T = A.T, t = state.phaseT;
+        const ease = x => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
+        // the cue swings onto the line, a little past it, and settles on the line it will strike
+        if (t < T.sight) state.aim = angLerp(A.from, A.to + A.over, ease(t / T.sight));
+        else state.aim = angLerp(A.to + A.over, A.to, ease((t - T.sight) / T.settle));
+        state.power = A.pw;
+        // practice strokes, the last back-swing, a pause at the back, then through
+        const s2 = T.sight + T.settle, s3 = s2 + T.n * T.feather, s4 = s3 + T.back, s5 = s4 + T.pause, full = A.pw * 0.8 + 0.15;
+        if (t < s2) state.aiPull = 0.05;
+        else if (t < s3) { const f = ((t - s2) / T.feather) % 1; state.aiPull = 0.05 + A.amp * Math.sin(Math.PI * f); }
+        else if (t < s4) state.aiPull = 0.05 + (full - 0.05) * Math.sin((t - s3) / T.back * Math.PI / 2);
+        else if (t < s5) state.aiPull = full;
+        else state.aiPull = Math.max(0, full * (1 - (t - s5) / T.strike));
+        if (t >= s5 + T.strike) { state.aim = res.ang; strikeNow({ ang: res.ang, V0: res.V0, a: res.a, b: res.b }); }
       }
       mirror();
     },
