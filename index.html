@@ -701,23 +701,72 @@ function camWant() {
   if (scene === 'title' || scene === 'levels') return { yaw: -0.6 + t * 0.04, pitch: 0.42, dist: 3.6, tx: 0.2, ty: 0, th: 0 };
   if (cam.free) return cam.free;
   if (cam.mode === 'top') return { yaw: Math.PI / 2, pitch: 1.5605, dist: 3.25 * cam.topZoom, tx: 0, ty: 0, th: 0 };
-  if (cam.mode === 'watch') {
-    let sx = 0, sy = 0, n = 0;
-    for (let i = 0; i < LP.N; i++) if (sim.on[i] && sim.mov[i]) { sx += sim.x[i]; sy += sim.y[i]; n++; }
-    if (!n) { sx = sim.x[0]; sy = sim.y[0]; n = 1; }
-    return { yaw: state.shotAng, pitch: 0.62, dist: 2.1 * cam.zoom, tx: sx / n * 0.7, ty: sy / n * 0.7, th: 0 };
-  }
+  if (cam.mode === 'watch') return watchFrame();
   // aim: never higher than aim_pitch_max, so play is always from a player's eye, not from above
   const a = state.aim + cam.yawOff;
   return { yaw: a, pitch: Math.min(aimPitchMax(), tune.cam_pitch * Math.PI / 180 + cam.pitchOff + cam.lift), dist: tune.cam_dist * cam.zoom,
     tx: sim.x[0] + Math.cos(state.aim) * 0.18, ty: sim.y[0] + Math.sin(state.aim) * 0.18, th: R };
 }
 const aimPitchMax = () => tune.aim_pitch_max * Math.PI / 180;
+// The camera that watches a shot frames every ball in play, the way it is going. A ball counts
+// fully while it moves and fades out over watch_fade s once it stops or drops, so the frame
+// never jumps when one comes to rest; a moving ball counts where it will be watch_lead s on.
+// The camera looks down the shot's line, centres what it frames, backs off and rises to keep it
+// all in shot, and eases there at watch_follow.
+const watch = { w: new Float32Array(LP.N), x: new Float32Array(LP.N), y: new Float32Array(LP.N), last: null };
+function watchReset() { watch.w.fill(0); watch.last = null; }
+function watchUpdate(dt) {
+  const fade = Math.exp(-dt / Math.max(0.05, tune.watch_fade)), lx = table.HL - R, ly = table.HW - R;
+  const anyMoving = sim.anyMoving();
+  for (let i = 0; i < LP.N; i++) {
+    if (sim.on[i] && sim.mov[i]) {
+      watch.w[i] = 1;
+      watch.x[i] = Math.max(-lx, Math.min(lx, sim.x[i] + sim.vx[i] * tune.watch_lead));
+      watch.y[i] = Math.max(-ly, Math.min(ly, sim.y[i] + sim.vy[i] * tune.watch_lead));
+    } else if (i === 0 && sim.on[0] && anyMoving) { // the cue ball stays in shot while anything still runs
+      watch.w[0] = Math.max(watch.w[0] * fade, 0.6);
+      watch.x[i] = Math.max(-lx, Math.min(lx, sim.x[i] + sim.vx[i] * tune.watch_lead));
+      watch.y[i] = Math.max(-ly, Math.min(ly, sim.y[i] + sim.vy[i] * tune.watch_lead));
+    } else {
+      watch.w[i] *= fade;
+      if (sim.on[i]) { watch.x[i] += (sim.x[i] - watch.x[i]) * (1 - fade); watch.y[i] += (sim.y[i] - watch.y[i]) * (1 - fade); }
+    }
+  }
+}
+function watchFrame() {
+  const yaw = state.shotAng, cu = Math.cos(yaw), su = Math.sin(yaw);
+  // the weighted centre, then each ball drawn toward it by how little it counts now
+  let W = 0, cx = 0, cy = 0;
+  for (let i = 0; i < LP.N; i++) if (watch.w[i] > 0.01) { W += watch.w[i]; cx += watch.w[i] * watch.x[i]; cy += watch.w[i] * watch.y[i]; }
+  if (W < 0.02) return watch.last || { yaw, pitch: tune.watch_pitch_min * Math.PI / 180, dist: 2 * cam.zoom, tx: sim.x[0], ty: sim.y[0], th: 0 };
+  cx /= W; cy /= W;
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity; // along the shot, and across it
+  for (let i = 0; i < LP.N; i++) {
+    const w = watch.w[i]; if (w <= 0.01) continue;
+    const px = cx + (watch.x[i] - cx) * Math.min(1, w * 1.5), py = cy + (watch.y[i] - cy) * Math.min(1, w * 1.5);
+    const u = px * cu + py * su, v = -px * su + py * cu;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+  }
+  const uc = (u0 + u1) / 2, vc = (v0 + v1) / 2, eu = (u1 - u0) / 2 + tune.watch_margin, ev = (v1 - v0) / 2 + tune.watch_margin;
+  const s = Math.max(0, Math.min(1, (Math.max(eu, ev) - 0.35) / 1.2)), ss = s * s * (3 - 2 * s);
+  const pitch = (tune.watch_pitch_min + (tune.watch_pitch_max - tune.watch_pitch_min) * ss) * Math.PI / 180;
+  // far enough that the nearest edge of the frame (which perspective makes biggest) still fits,
+  // inside the room the HUD leaves: 72% of the height, 85% of the width
+  const tv = Math.tan(camera.fov * Math.PI / 360), th = tv * camera.aspect, near = eu * Math.cos(pitch);
+  const fit = Math.max(eu * Math.sin(pitch) / (tv * 0.72), ev / (th * 0.85)) + near;
+  const dist = Math.max(tune.watch_dist_min, Math.min(tune.watch_dist_max, fit)) * cam.zoom;
+  watch.last = { yaw, pitch, dist, tx: uc * cu - vc * su, ty: uc * su + vc * cu, th: 0 };
+  return watch.last;
+}
 function angLerp(a, b, k) { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * k; }
 function updateCamera(dt, snap) {
   if (cam.mode === 'walk' && cam.walk && scene !== 'title' && scene !== 'levels') { walkCamera(); return; }
-  const w = camWant(), k = snap ? 1 : 1 - Math.exp(-tune.cam_follow * dt);
-  cam.yaw = angLerp(cam.yaw, w.yaw, k); cam.pitch += (w.pitch - cam.pitch) * k; cam.dist += (w.dist - cam.dist) * k;
+  if (cam.mode === 'watch' && !cam.free) watchUpdate(dt);
+  const rate = cam.mode === 'watch' && !cam.free ? tune.watch_follow : tune.cam_follow;
+  const w = camWant(), k = snap ? 1 : 1 - Math.exp(-rate * dt);
+  // watching, the camera backs off three times as fast as it closes in, so a spreading shot stays in frame
+  const kd = snap ? 1 : cam.mode === 'watch' && w.dist > cam.dist ? 1 - Math.exp(-3 * rate * dt) : k;
+  cam.yaw = angLerp(cam.yaw, w.yaw, k); cam.pitch += (w.pitch - cam.pitch) * k; cam.dist += (w.dist - cam.dist) * kd;
   cam.tx += (w.tx - cam.tx) * k; cam.ty += (w.ty - cam.ty) * k; cam.th += (w.th - cam.th) * k;
   const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
   const target = V3(cam.tx, cam.ty, cam.th);
@@ -969,7 +1018,7 @@ function strikeNow(s) {
   const aimed = s.aim === undefined ? s.ang : s.aim; // the line you aimed along (the cue may be turned for side)
   shot = shotContext(aimed); state.replayed = false;
   sim.strike(s.ang, s.V0, s.a, s.b);
-  watchShot();
+  watchShot(); watchReset();
   state.shotAng = aimed; state.phase = 'roll'; state.phaseT = 0; state.pull = 0; state.power = 0;
   if (!cam.free && cam.mode !== 'top' && cam.mode !== 'walk') cam.mode = 'watch';
 }
@@ -1028,14 +1077,13 @@ function judgeShot() {
   state.shots++;
   state.lastRes = res;
   const who = p => (state.mode === 'training' ? 'You' : p === 0 ? 'You' : 'The computer');
-  const names = res.potted.map(i => LP.NAME[LP.KIND[i]]).join(', ');
   if (state.mode === 'training') { trainingCheck(res, rec, brkBefore + res.pts); }
   else {
     if (res.threeMiss) {
       say(`Foul and a miss, the third from the same position after a warning: the frame goes to ${me === 0 ? 'the computer' : 'you'}.`, 4);
     } else if (res.foul) {
       say(`${res.miss ? 'Foul and a miss' : 'Foul'}: ${res.reason}. ${res.foulPts} away to ${me === 0 ? 'the computer' : 'you'}.${res.freeBall ? ' Free ball.' : ''}`, 3.2);
-    } else if (res.pts > 0) say(`${names}: ${res.pts} ${res.pts === 1 ? 'point' : 'points'}. Break ${frame.brk}.`, 2);
+    } else if (res.pts > 0) { /* a pot: no message, the scoreboard shows the points and the break */ }
     else say(`${who(me)} missed. ${frame.player === 0 ? 'Your' : 'The computer\'s'} turn.`, 2);
   }
   mirror();
@@ -1067,7 +1115,7 @@ function trainingCheck(res, rec, brkNow) {
   if (!state.goal && !state.failed && state.shots >= def.shots) fail('Out of shots.');
   if (state.goal) say('Done.', 1.5);
   else if (state.failed) say(state.failed, 3);
-  else if (potted) say(g.type === 'break' ? `Break ${brkNow}.` : 'Good. Keep going.', 1.6);
+  else if (potted && g.type !== 'break') say('Good. Keep going.', 1.6); // the break level's card shows the break
   else say(`Shot ${state.shots} of ${def.shots}.`, 1.4);
 }
 function levelStars() {

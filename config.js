@@ -62,6 +62,14 @@ window.CONFIG = {
   cam_dist: { value: 0.95, min: 0.3, max: 3, step: 0.05 },           // aim camera distance behind the cue ball, m
   cam_pitch: { value: 13, min: 2, max: 80, step: 1 },                // aim camera angle above the cloth, degrees
   cam_follow: { value: 9, min: 1, max: 30, step: 0.5 },              // how quickly the camera eases to its target, 1/s
+  watch_follow: { value: 3, min: 0.5, max: 15, step: 0.25 },          // watching a shot: how quickly the camera eases to its framing, 1/s (lower: smoother)
+  watch_fade: { value: 0.9, min: 0.1, max: 3, step: 0.05 },           // watching: how long a ball that stops or drops goes on counting, s
+  watch_lead: { value: 0.35, min: 0, max: 1.5, step: 0.05 },          // watching: a moving ball counts where it will be this far ahead, s
+  watch_margin: { value: 0.22, min: 0, max: 0.8, step: 0.01 },        // watching: room kept round what is framed, m
+  watch_dist_min: { value: 1.2, min: 0.5, max: 4, step: 0.05 },       // watching: the closest the camera comes, m
+  watch_dist_max: { value: 4.4, min: 1.5, max: 8, step: 0.1 },        // watching: the furthest it backs off, m
+  watch_pitch_min: { value: 32, min: 10, max: 80, step: 1 },          // watching: its angle above the cloth with the balls close together, degrees
+  watch_pitch_max: { value: 58, min: 10, max: 85, step: 1 },          // watching: its angle with the balls spread over the table, degrees
   aim_pitch_max: { value: 40, min: 15, max: 80, step: 1 },           // the highest the aim view can be raised (orbit and swipe), degrees: play is never from above
   light_intensity: { value: 2.2, min: 0.2, max: 6, step: 0.05 },      // the canopy lights
 
