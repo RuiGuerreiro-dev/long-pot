@@ -54,6 +54,8 @@ window.CONFIG = {
   touch_lift_drag: { value: 0.12, min: 0.02, max: 0.5, step: 0.01 }, // phone: degrees the aim view rises per pixel swiped down on the table
   touch_lift_max: { value: 20, min: 0, max: 45, step: 1 },           // phone: the highest the swipe raises the aim view, degrees
   lift_aim_fine: { value: 0.35, min: 0.1, max: 1, step: 0.05 },      // phone: the aim's swipe speed with the view raised all the way (1: as low down)
+  touch_lift_settle: { value: 0.1, min: 0, max: 0.4, step: 0.01 },    // phone, the fine-aim wheel: movement in this last stretch before the finger lifts is undone, s
+  touch_lift_jitter: { value: 8, min: 0, max: 30, step: 1 },          // ...when it is no more than this many pixels (a finger rolling off, not a scroll)
   walk_speed: { value: 1.2, min: 0.3, max: 4, step: 0.1 },           // walking round the table, m/s
   walk_gap: { value: 0.3, min: 0.05, max: 1, step: 0.05 },           // walking: how far the eye stays out from the rail's outer edge, m (never over the table)
   walk_reach: { value: 1.2, min: 0.3, max: 3, step: 0.1 },           // walking: the furthest the eye goes out from the rail's outer edge, m

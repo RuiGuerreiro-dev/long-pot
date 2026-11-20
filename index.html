@@ -1691,8 +1691,25 @@ function drawFineWheel() {
   ctx.restore();
   caps('Fine', x + w / 2, y + h + 18, 12, UI.dim, 'center');
   if (can) hudHits.push({ x, y, w, h, drag: true,
-    fn: (lx, ly) => { if (ptr.wheelY == null) { ptr.wheelY = ly; return; } const d = ly - ptr.wheelY; ptr.wheelY = ly; state.wheel = (state.wheel || 0) + d; turnAim(-d * tune.aim_drag * tune.aim_fine * Math.PI / 180); },
-    up: () => { ptr.wheelY = null; }, cancel: () => { ptr.wheelY = null; } });
+    fn: (lx, ly) => {
+      const now = clock.now();
+      if (ptr.wheelY == null) { ptr.wheelY = ly; ptr.wheelHist = [[now, state.aim, state.wheel || 0, ly]]; return; }
+      const d = ly - ptr.wheelY; ptr.wheelY = ly; state.wheel = (state.wheel || 0) + d; turnAim(-d * tune.aim_drag * tune.aim_fine * Math.PI / 180);
+      const H = ptr.wheelHist; H.push([now, state.aim, state.wheel, ly]);
+      while (H.length > 2 && now - H[1][0] > 0.5) H.shift(); // half a second is plenty to look back on
+    },
+    up: () => { wheelRelease(); ptr.wheelY = null; }, cancel: () => { ptr.wheelY = null; ptr.wheelHist = null; } });
+}
+/** A finger lifting off the wheel rolls a little, and at the wheel's fine rate that moves the aim
+ *  off what you chose. On release, a movement in the last touch_lift_settle s of no more than
+ *  touch_lift_jitter pixels is undone: the aim goes back to where it was just before the lift. */
+function wheelRelease() {
+  const H = ptr.wheelHist; ptr.wheelHist = null;
+  if (!H || H.length < 2 || state.phase !== 'aim') return;
+  const now = clock.now(), last = H[H.length - 1];
+  let k = H.length - 1; while (k > 0 && now - H[k][0] < tune.touch_lift_settle) k--;
+  const moved = Math.abs(last[3] - H[k][3]);
+  if (k < H.length - 1 && moved <= tune.touch_lift_jitter) { state.aim = H[k][1]; state.wheel = H[k][2]; }
 }
 /** V or the button: the top view, for reading the table (no aiming or striking from it), and back. */
 function toggleView() {
