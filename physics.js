@@ -212,11 +212,14 @@
      *  of centre, b: above centre, both in ball radii, in the cue's own frame. The tip is first
      *  brought within reach (reachTip), and the cue raised as cueElevation needs: a raised cue
      *  drives the ball into the cloth (less speed along the table, and the cloth's grip eats
-     *  into the spin), and side on a raised cue swerves the ball (spin along its path). */
+     *  into the spin), and side on a raised cue swerves the ball (spin along its path). A bridge
+     *  never holds the cue quite level: it is always raised at least P.cue_elev_min degrees, so
+     *  side swerves the ball a little on every shot. */
     strike(ang, V0, a, b) {
       const P = this.P, R = this.T.R, m = SPEC.M, M = P.cue_mass;
       [a, b] = this.reachTip(ang, a, b);
-      const el = P.cue_elev_max == null ? 0 : Math.min(this.cueElevation(ang, a, b), P.cue_elev_max * Math.PI / 180);
+      const elMin = (P.cue_elev_min || 0) * Math.PI / 180;
+      const el = P.cue_elev_max == null ? 0 : Math.max(elMin, Math.min(this.cueElevation(ang, a, b), P.cue_elev_max * Math.PI / 180));
       const se = Math.sin(el), ce = Math.cos(el);
       const r2 = a * a + b * b;
       const J = (1 + P.tip_restitution) * V0 / (1 / M + 1 / m + (5 / (2 * m)) * r2);

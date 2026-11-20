@@ -39,6 +39,7 @@ window.CONFIG = {
   tip_max: { value: 0.5, min: 0.2, max: 0.6, step: 0.02 },            // furthest tip offset from centre, in ball radii (miscue beyond)
   physics_substeps: { value: 6, min: 2, max: 16, step: 1 },           // physics substeps per 1/60 s game step
   cue_elev_max: { value: 40, min: 15, max: 80, step: 1 },             // the most the cue can be raised to clear a cushion or ball behind, degrees; a tip spot that needs more can't be played
+  cue_elev_min: { value: 5, min: 0, max: 15, step: 0.5 },             // the least the cue is raised (a bridge never holds it level), degrees: side then swerves the ball a little
   cue_reach: { value: 0.35, min: 0.1, max: 0.8, step: 0.01 },         // how far behind the cue ball the shaft must clear things (the bridge's reach), m
   cue_shaft_r: { value: 0.0065, min: 0.004, max: 0.012, step: 0.0005 }, // the cue shaft's radius near the tip, m
 
@@ -54,6 +55,8 @@ window.CONFIG = {
   touch_lift_max: { value: 20, min: 0, max: 45, step: 1 },           // phone: the highest the swipe raises the aim view, degrees
   lift_aim_fine: { value: 0.35, min: 0.1, max: 1, step: 0.05 },      // phone: the aim's swipe speed with the view raised all the way (1: as low down)
   walk_speed: { value: 1.2, min: 0.3, max: 4, step: 0.1 },           // walking round the table, m/s
+  walk_gap: { value: 0.3, min: 0.05, max: 1, step: 0.05 },           // walking: how far the eye stays out from the rail's outer edge, m (never over the table)
+  walk_reach: { value: 1.2, min: 0.3, max: 3, step: 0.1 },           // walking: the furthest the eye goes out from the rail's outer edge, m
 
   // ---- Camera ----
   cam_dist: { value: 0.95, min: 0.3, max: 3, step: 0.05 },           // aim camera distance behind the cue ball, m
@@ -64,8 +67,10 @@ window.CONFIG = {
 
   // ---- Aim guide (every mode that shows one) ----
   guide_line_width: { value: 3, min: 1.5, max: 8, step: 0.5 },        // the aim line's width, mm
-  guide_obj_len_ghost: { value: 0.35, min: 0.1, max: 1, step: 0.05 }, // the object ball's line, ghost-ball guide, m
-  guide_obj_len_full: { value: 0.7, min: 0.2, max: 1.5, step: 0.05 }, // the object ball's line, full guide, m
+  guide_obj_len_ghost: { value: 0.6, min: 0.1, max: 1.5, step: 0.05 }, // the object ball's line, ghost-ball guide, m (stops at the cushion)
+  guide_obj_len_full: { value: 1.1, min: 0.2, max: 2, step: 0.05 },  // the object ball's line, full guide, m (stops at the cushion)
+  obj_line_width: { value: 9, min: 2, max: 16, step: 0.5 },           // the object ball's line's width, mm (faces the camera, with a dark edge and an arrowhead; faint through a ball in front)
+  obj_line_flow: { value: 0.25, min: 0, max: 1, step: 0.05 },         // how fast the dashes on the object ball's line drift the way it will run, m/s (0: still)
   cone_from: { value: 30, min: 0, max: 80, step: 1 },                 // cut angle where the object ball's line starts to open into a cone, degrees
   cone_to: { value: 75, min: 10, max: 89, step: 1 },                  // cut angle where the cone is widest, degrees
   cone_max: { value: 9, min: 0, max: 25, step: 0.5 },                 // the cone's widest half-angle, degrees

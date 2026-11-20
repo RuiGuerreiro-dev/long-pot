@@ -336,7 +336,7 @@ function sfx(kind, strength) {
 // ---- The table: physics geometry and the sim ----------------------------------------------
 const PHYS_KEYS = ['mu_slide', 'mu_roll', 'spin_decel', 'ball_restitution', 'throw_mu_min', 'throw_mu_peak', 'throw_falloff',
   'cushion_restitution', 'cushion_friction', 'cushion_height', 'cue_mass', 'cue_end_mass', 'tip_restitution',
-  'tip_max', 'cue_elev_max', 'cue_reach', 'cue_shaft_r'];
+  'tip_max', 'cue_elev_max', 'cue_elev_min', 'cue_reach', 'cue_shaft_r'];
 function physParams() { const p = {}; for (const k of PHYS_KEYS) p[k] = tune[k]; return p; }
 function tableParams() {
   return { corner_throat: tune.corner_throat, corner_jaw_radius: tune.corner_jaw_radius, middle_throat: tune.middle_throat,
@@ -599,17 +599,103 @@ aimStrip.visible = false; aimStrip.frustumCulled = false; world.add(aimStrip);
 const pathMat = new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
 const pathMesh = new THREE.Mesh(new THREE.BufferGeometry(), pathMat);
 pathMesh.visible = false; pathMesh.frustumCulled = false; world.add(pathMesh);
-// The object ball's line opens into a cone on a hard cut: a flat wedge from the ball's edge.
-const coneMesh = new THREE.Mesh(new THREE.BufferGeometry(), guideMat2);
-coneMesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
-coneMesh.visible = false; coneMesh.frustumCulled = false; world.add(coneMesh);
-/** Points a wedge from (ax, ay) along ang, len long, opening half each side (radians). */
-function setCone(ax, ay, ang, len, half) {
-  const at = coneMesh.geometry.attributes.position, a = V3(ax, ay, 0.0012);
-  const l = V3(ax + Math.cos(ang + half) * len, ay + Math.sin(ang + half) * len, 0.0012);
-  const r = V3(ax + Math.cos(ang - half) * len, ay + Math.sin(ang - half) * len, 0.0012);
-  at.array.set([a.x, a.y, a.z, r.x, r.y, r.z, l.x, l.y, l.z]); at.needsUpdate = true;
-  coneMesh.geometry.computeBoundingSphere(); coneMesh.visible = true;
+// The object ball's line: bold gold with a dark edge so it reads on the green, an arrowhead,
+// dashes that drift the way the ball will run, and a ring under the ball it starts from. It
+// turns its width to the camera (a strip lying flat on the cloth all but vanishes when it runs
+// across the view), and where a ball stands in front of it, it shows through faintly.
+const OBJ_GOLD = 0xffd447;
+const overlayMat = (color, opacity, map, xray) => new THREE.MeshBasicMaterial({ color, opacity, map: map || null, transparent: true, depthTest: !xray, depthWrite: false, side: THREE.DoubleSide });
+const flowTex = (() => {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 4;
+  const g = c.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, 22, 4);
+  const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; return t;
+})();
+const objEdgeMat = overlayMat(0x06120a, 0.55), objMat = overlayMat(OBJ_GOLD, 0.95), objFlowMat = overlayMat(0xffffff, 0.55, flowTex);
+const coneFillMat = overlayMat(OBJ_GOLD, 0.26);
+/** A mesh drawn over everything, its vertices rewritten in place each frame (room for 16). */
+function overlay(mat, order) {
+  const g = new THREE.BufferGeometry(), n = 16;
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2).setUsage(THREE.DynamicDrawUsage));
+  g.setIndex(new THREE.BufferAttribute(new Uint16Array(n * 3), 1).setUsage(THREE.DynamicDrawUsage));
+  const m = new THREE.Mesh(g, mat); m.renderOrder = order; m.visible = false; m.frustumCulled = false; world.add(m);
+  return m;
+}
+const objEdge = overlay(objEdgeMat, 20), objCore = overlay(objMat, 21), objFlow = overlay(objFlowMat, 22);
+const objXray = new THREE.Mesh(objCore.geometry, overlayMat(OBJ_GOLD, 0.4, null, true)); // the core again, seen through balls
+objXray.renderOrder = 18; objXray.visible = false; objXray.frustumCulled = false; world.add(objXray);
+const objRing = new THREE.Mesh(new THREE.RingGeometry(R * 1.1, R * 1.38, 48), new THREE.MeshBasicMaterial({ color: OBJ_GOLD, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }));
+objRing.rotation.x = -Math.PI / 2; objRing.visible = false; world.add(objRing);
+// On a hard cut the line opens into a cone: a flat wedge from the ball's edge, outlined.
+const coneMesh = overlay(coneFillMat, 19);
+// Writing an overlay mesh: begin, then lines (a quad whose width faces the camera) and heads.
+const ovl = { mesh: null, nv: 0, ni: 0 }, _p = new THREE.Vector3(), _d = new THREE.Vector3(), _n = new THREE.Vector3();
+function ovlBegin(mesh) { ovl.mesh = mesh; ovl.nv = 0; ovl.ni = 0; }
+function ovlVert(v, u, t) {
+  const g = ovl.mesh.geometry, i = ovl.nv++;
+  g.attributes.position.array.set([v.x, v.y, v.z], i * 3); g.attributes.uv.array.set([u, t], i * 2);
+  return i;
+}
+function ovlTri(i, j, k) { const I = ovl.mesh.geometry.index.array; I[ovl.ni++] = i; I[ovl.ni++] = j; I[ovl.ni++] = k; }
+function ovlEnd() {
+  const g = ovl.mesh.geometry;
+  g.attributes.position.needsUpdate = g.attributes.uv.needsUpdate = g.index.needsUpdate = true;
+  g.setDrawRange(0, ovl.ni); ovl.mesh.visible = true;
+  if (ovl.mesh === objCore) objXray.visible = true;
+}
+/** The unit width direction, at a point p along a line d (three.js), that faces the camera. */
+function faceDir(p, d) {
+  _p.subVectors(p, camera.position); _n.crossVectors(d, _p);
+  const l = _n.length(); return l > 1e-9 ? _n.multiplyScalar(1 / l) : _n.set(0, 1, 0);
+}
+const OVL_Z = 0.0016;
+/** A line on the cloth from (ax, ay) to (bx, by), w wide on screen, uv u0..u1 along it. Turned
+ *  to face the camera it stands partly up, so it is raised until its lower edge is on the cloth. */
+function ovlLine(ax, ay, bx, by, w, u0 = 0, u1 = 1) {
+  const A = V3(ax, ay, OVL_Z), B = V3(bx, by, OVL_Z);
+  _d.subVectors(B, A).normalize();
+  const n = faceDir(A.clone().add(B).multiplyScalar(0.5), _d).clone().multiplyScalar(w / 2);
+  A.y += Math.abs(n.y); B.y += Math.abs(n.y);
+  const i = ovlVert(A.clone().add(n), u0, 1), j = ovlVert(A.clone().sub(n), u0, 0);
+  const k = ovlVert(B.clone().add(n), u1, 1), l = ovlVert(B.clone().sub(n), u1, 0);
+  ovlTri(i, j, k); ovlTri(j, l, k);
+}
+/** An arrowhead: base centred on (bx, by), half as wide as H on each side, its tip at (tx, ty). */
+function ovlHead(bx, by, tx, ty, H) {
+  const Bv = V3(bx, by, OVL_Z), T = V3(tx, ty, OVL_Z);
+  _d.subVectors(T, Bv).normalize();
+  const n = faceDir(Bv, _d).clone().multiplyScalar(H);
+  Bv.y += Math.abs(n.y); T.y += Math.abs(n.y) * 0.5;
+  ovlTri(ovlVert(Bv.clone().add(n), 0, 0), ovlVert(Bv.clone().sub(n), 0, 0), ovlVert(T, 0, 0));
+}
+const FLOW_GAP = 0.07; // one dash and its gap along the object ball's line, m
+/** The object ball's arrow from (sx, sy) along ang, len long and w wide: the dark edge, the gold
+ *  line with its head, and the drifting dashes on its shaft. */
+function setObjArrow(sx, sy, ang, len, w) {
+  const ux = Math.cos(ang), uy = Math.sin(ang), hl = Math.min(len * 0.4, w * 3.4), hw = w * 2;
+  const shaft = len - hl, e = w * 0.5;
+  for (const [mesh, grow] of [[objEdge, e], [objCore, 0]]) {
+    ovlBegin(mesh);
+    ovlLine(sx - ux * grow, sy - uy * grow, sx + ux * shaft, sy + uy * shaft, w + 2 * grow);
+    const bx = sx + ux * (shaft - grow), by = sy + uy * (shaft - grow), tip = len + 1.6 * grow;
+    ovlHead(bx, by, sx + ux * tip, sy + uy * tip, hw + 1.6 * grow);
+    ovlEnd();
+  }
+  ovlBegin(objFlow); ovlLine(sx, sy, sx + ux * shaft, sy + uy * shaft, w, 0, shaft / FLOW_GAP); ovlEnd();
+}
+/** The cone: a wedge from (ax, ay) along ang, len long, opening half each side (radians), filled
+ *  faintly and outlined in gold with the dark edge. */
+function setCone(ax, ay, ang, len, half, w) {
+  const l = [ax + Math.cos(ang + half) * len, ay + Math.sin(ang + half) * len], r = [ax + Math.cos(ang - half) * len, ay + Math.sin(ang - half) * len];
+  ovlBegin(coneMesh);
+  ovlTri(ovlVert(V3(ax, ay, 0.0015), 0, 0), ovlVert(V3(r[0], r[1], 0.0015), 0, 0), ovlVert(V3(l[0], l[1], 0.0015), 0, 0));
+  ovlEnd();
+  for (const [mesh, grow] of [[objEdge, w * 0.5], [objCore, 0]]) {
+    ovlBegin(mesh);
+    const lw = w * 0.6 + 2 * grow;
+    ovlLine(ax, ay, l[0], l[1], lw); ovlLine(ax, ay, r[0], r[1], lw);
+    ovlEnd();
+  }
 }
 /** Rebuilds a strip mesh through pts ([x, y] on the cloth), width metres wide. */
 function setStrip(mesh, pts, width) {
@@ -706,15 +792,43 @@ function liftAimScale() {
   return top > 0 ? 1 - (1 - tune.lift_aim_fine) * Math.min(1, cam.lift / top) : 1;
 }
 
-// Walking round the table: a free eye at a fixed height that looks round and walks, anywhere
-// round or over the table. Phone: the left finger looks, the right finger walks (a stick from
-// where it lands). Mouse: drag to look, W A S D or the arrows to walk.
+// Walking round the table: a free eye at a fixed height that looks round and walks, in a band
+// round the table (walk_gap to walk_reach out from the rail), never over it. Phone: the left
+// finger looks, the right finger walks (a stick from where it lands). Mouse: drag to look,
+// W A S D or the arrows to walk.
 const walkIn = { look: null, move: null, lx: 0, ly: 0, ox: 0, oy: 0, jx: 0, jy: 0 };
+const railHalf = () => [table.HL + table.CW + LP.SPEC.RAIL_W, table.HW + table.CW + LP.SPEC.RAIL_W];
+/** Keeps the walking eye w in the band round the table: walk_gap clear of the rail's outer edge
+ *  (round at the corners), at most walk_reach out. A step toward the table slides along it. */
+function walkClamp(w) {
+  const [hx, hy] = railHalf(), gap = tune.walk_gap, far = Math.max(gap + 0.05, tune.walk_reach);
+  const sx = w.x < 0 ? -1 : 1, sy = w.y < 0 ? -1 : 1, qx = Math.abs(w.x) - hx, qy = Math.abs(w.y) - hy;
+  if (qx <= 0 && qy <= 0) { // over the table: out by the nearest side
+    if (qx > qy) w.x = sx * (hx + gap); else w.y = sy * (hy + gap);
+    return;
+  }
+  const ox = Math.max(qx, 0), oy = Math.max(qy, 0), d = Math.hypot(ox, oy), want = Math.max(gap, Math.min(far, d));
+  if (Math.abs(want - d) < 1e-9) return;
+  const k = want / d;
+  w.x = sx * (Math.min(Math.abs(w.x), hx) + ox * k); w.y = sy * (Math.min(Math.abs(w.y), hy) + oy * k);
+}
 function toggleWalk() {
   if (cam.mode === 'walk') { endWalk(); return; }
   const p = camera.position, dir = new THREE.Vector3(); camera.getWorldDirection(dir);
-  cam.walk = { x: p.x, y: -p.z, h: Math.max(0.12, Math.min(1.6, p.y)),
+  const w = { x: p.x, y: -p.z, h: Math.max(0.12, Math.min(1.6, p.y)),
     yaw: Math.atan2(-dir.z, dir.x), pitch: Math.max(-0.6, Math.min(1.45, -Math.asin(Math.max(-1, Math.min(1, dir.y))))) };
+  // an eye over the table steps back off it, the way it looks, and keeps looking where it did
+  const [hx, hy] = railHalf(), ex = hx + tune.walk_gap, ey = hy + tune.walk_gap;
+  if (Math.abs(w.x) < ex && Math.abs(w.y) < ey) {
+    const lx = dir.y < -0.01 ? p.x - dir.x * p.y / dir.y : p.x + dir.x, ly = dir.y < -0.01 ? -(p.z - dir.z * p.y / dir.y) : -(p.z + dir.z);
+    let bx = -Math.cos(w.yaw), by = -Math.sin(w.yaw); if (Math.hypot(bx, by) < 1e-6) { bx = -1; by = 0; }
+    const tx = bx > 0 ? (ex - w.x) / bx : bx < 0 ? (-ex - w.x) / bx : Infinity, ty = by > 0 ? (ey - w.y) / by : by < 0 ? (-ey - w.y) / by : Infinity;
+    const t = Math.min(tx, ty); w.x += bx * t; w.y += by * t;
+    walkClamp(w);
+    w.yaw = Math.atan2(ly - w.y, lx - w.x);
+    w.pitch = Math.max(-0.6, Math.min(1.45, Math.atan2(w.h, Math.hypot(lx - w.x, ly - w.y))));
+  } else walkClamp(w);
+  cam.walk = w;
   cam.free = null; cam.mode = 'walk'; state.help = false; dropStroke();
 }
 function endWalk() {
@@ -735,7 +849,7 @@ function walkMove(dt) {
   const m = Math.hypot(f, s); if (m > 1) { f /= m; s /= m; }
   w.x += (Math.cos(w.yaw) * f + Math.sin(w.yaw) * s) * sp;
   w.y += (Math.sin(w.yaw) * f - Math.cos(w.yaw) * s) * sp;
-  w.x = Math.max(-table.HL - 1.3, Math.min(table.HL + 1.3, w.x)); w.y = Math.max(-table.HW - 1.3, Math.min(table.HW + 1.3, w.y));
+  walkClamp(w);
 }
 function walkCamera() {
   const w = cam.walk, cp = Math.cos(w.pitch), dx = Math.cos(w.yaw) * cp, dy = Math.sin(w.yaw) * cp, dz = -Math.sin(w.pitch);
@@ -851,7 +965,8 @@ function beginStrike(power) {
   if (state.phase !== 'aim' || power <= 0.004) return;
   if (state.human) markHintSeen();
   state.phase = 'strike'; state.phaseT = 0; state.strikePower = power; state.strikeFrom = Math.max(0.02, state.pull);
-  state.pending = { ang: state.aim, V0: cueSpeed(power), a: state.tipA, b: state.tipB };
+  const V0 = cueSpeed(power); // with side, the cue is turned so the contact stays where you aimed
+  state.pending = { ang: cueAngleFor(state.aim, V0, state.tipA, state.tipB), aim: state.aim, V0, a: state.tipA, b: state.tipB };
 }
 // What the referee needs from the moment of the stroke: the position (to put the balls back
 // after a Foul and a Miss), touching balls, whether a ball on could be seen, and the scores.
@@ -887,10 +1002,11 @@ function watchShot() {
 function strikeNow(s) {
   sim.setParams(physParams());
   sim.onEvent = onSimEvent;
-  shot = shotContext(s.ang); state.replayed = false;
+  const aimed = s.aim === undefined ? s.ang : s.aim; // the line you aimed along (the cue may be turned for side)
+  shot = shotContext(aimed); state.replayed = false;
   sim.strike(s.ang, s.V0, s.a, s.b);
   watchShot();
-  state.shotAng = s.ang; state.phase = 'roll'; state.phaseT = 0; state.pull = 0; state.power = 0;
+  state.shotAng = aimed; state.phase = 'roll'; state.phaseT = 0; state.pull = 0; state.power = 0;
   if (!cam.free && cam.mode !== 'top' && cam.mode !== 'walk') cam.mode = 'watch';
 }
 function onSimEvent(kind, i, j, speed) {
@@ -1073,7 +1189,7 @@ function predictCuePath(power) {
   predictKey = key;
   const p = predictSim;
   p.copyFrom(sim); p.setParams(physParams()); p.onEvent = null;
-  p.strike(state.aim, cueSpeed(power), state.tipA, state.tipB);
+  p.strike(cueAngleFor(state.aim, cueSpeed(power), state.tipA, state.tipB), cueSpeed(power), state.tipA, state.tipB);
   const h = STEP / Math.max(1, Math.round(tune.physics_substeps)), steps = Math.ceil(tune.assist_path_time / h);
   let pts = null, run = 0; // from the first contact on
   for (let s = 0; s < steps; s++) {
@@ -1090,15 +1206,50 @@ function predictCuePath(power) {
   predicted = pts && pts.length > 1 ? { pts } : null;
   return predicted;
 }
+// Side squirts the cue ball off the cue's line, and the cue's few degrees of elevation swerve it
+// back. You aim at a contact, so your cue is turned for you: with side, the cue ball still meets
+// what the straight aim line meets (the same side of the same ball, or the same cushion point),
+// only along a curve. The computer turns its own cue, so it never goes through this.
+const aimSim = new LP.Sim(table, LP.N);
+let aimKey = '', aimOut = 0;
+/** The cue's angle that sends the cue ball, struck at cue speed V0 with tip offset (a, b), to the
+ *  point the straight line along aim meets first. Without side the cue is not turned. */
+function cueAngleFor(aim, V0, a, b) {
+  if (Math.abs(a) < 1e-3 || !sim.on[0]) return aim;
+  const key = `${aim.toFixed(5)}|${V0.toFixed(3)}|${a.toFixed(3)}|${b.toFixed(3)}|${layoutKey()}`;
+  if (key === aimKey) return aimOut;
+  const t = guideFor(aim), x0 = sim.x[0], y0 = sim.y[0], r = Math.hypot(t.gx - x0, t.gy - y0);
+  let ang = aim;
+  if (r > 0.01) {
+    const p = aimSim, h = STEP / Math.max(1, Math.round(tune.physics_substeps)), n = Math.ceil(8 / h);
+    for (let it = 0; it < 4; it++) {
+      p.copyFrom(sim); p.setParams(physParams()); p.onEvent = null;
+      p.strike(ang, V0, a, b);
+      for (let i = 1; i < LP.N; i++) p.on[i] = 0; // the cue ball's own path: nothing is in its way before the contact
+      for (let s = 0; s < n; s++) {
+        p.step(h);
+        if (!p.on[0] || !p.mov[0] || p.rec.cushions > 0 || Math.hypot(p.x[0] - x0, p.y[0] - y0) >= r) break;
+      }
+      const ex = p.x[0] - x0, ey = p.y[0] - y0;
+      if (Math.hypot(ex, ey) < 0.02) break; // it barely moves: nothing to turn for
+      let err = Math.atan2(ey, ex) - aim;
+      while (err > Math.PI) err -= 2 * Math.PI; while (err < -Math.PI) err += 2 * Math.PI;
+      ang -= err;
+      if (Math.abs(err) < 1e-5) break;
+    }
+  }
+  aimKey = key; aimOut = ang;
+  return ang;
+}
 // The guide as the shot will really go, from the game's own physics: the cue ball's line to its
-// first contact (side's squirt on a level cue; a curve when side on a raised cue swerves it), the
-// ghost ball there, and the object ball's line off it with the throw that spin and cut give.
+// first contact (curved by side's swerve), the ghost ball there, and the object ball's line off
+// it with the throw that spin and cut give.
 const guideSim = new LP.Sim(table, LP.N);
 let guideKey = '', guided = null;
 function playGuide(pw) {
   const g = guideSim;
   g.copyFrom(sim); g.setParams(physParams()); g.onEvent = null;
-  g.strike(state.aim, cueSpeed(pw), state.tipA, state.tipB);
+  g.strike(cueAngleFor(state.aim, cueSpeed(pw), state.tipA, state.tipB), cueSpeed(pw), state.tipA, state.tipB);
   const h = STEP / Math.max(1, Math.round(tune.physics_substeps));
   const pts = [[g.x[0], g.y[0]]], out = { pts, ball: -1, curved: g.lastElev > 0.017 && Math.abs(g.wx[0] * Math.cos(state.aim) + g.wy[0] * Math.sin(state.aim)) > 0.5 };
   for (let s = 0, n = Math.ceil(6 / h); s < n; s++) {
@@ -1141,6 +1292,7 @@ const colLine = new THREE.Color(0xffffff), colHard = new THREE.Color(0xff3b30);
 function updateGuides() {
   for (const r of ribbons) r.visible = false; ghost.visible = false; ghostRing.visible = false;
   pathMesh.visible = false; aimStrip.visible = false; coneMesh.visible = false;
+  objEdge.visible = objCore.visible = objFlow.visible = objXray.visible = objRing.visible = false;
   const g = state.guide;
   // the guide shows only in the aim view: the top view and walking are for reading the table
   const showing = scene === 'play' && state.human && (state.phase === 'aim' || state.phase === 'strike') && cam.mode === 'aim' && !cam.free;
@@ -1169,16 +1321,25 @@ function updateGuides() {
     if (g !== 'ghost' && !path && q.rx !== undefined) setRibbon(ribbons[1], q.gx, q.gy, q.gx + q.rx * 0.4, q.gy + q.ry * 0.4, w);
     return;
   }
+  state.contact = q.ball >= 0 ? [q.ball, Math.round(q.gx * 1e4) / 1e4, Math.round(q.gy * 1e4) / 1e4] : null; // window.game.state reports it
   if (g === 'line') return;
   ghost.visible = true; ghost.position.copy(V3(q.gx, q.gy, R));
   ghostRing.visible = true; ghostRing.position.copy(V3(q.gx, q.gy, 0.0012));
-  // the object ball's line, as the physics sends it; on a hard cut it opens into a cone
-  const L = g === 'full' ? tune.guide_obj_len_full : tune.guide_obj_len_ghost;
-  const sx = sim.x[q.ball] + Math.cos(q.objDir) * R, sy = sim.y[q.ball] + Math.sin(q.objDir) * R;
+  // the object ball's line, as the physics sends it, to the cushion at most; on a hard cut it
+  // opens into a cone
+  const ox = sim.x[q.ball], oy = sim.y[q.ball], ux = Math.cos(q.objDir), uy = Math.sin(q.objDir);
+  const cx = ux > 0 ? (table.HL - R - ox) / ux : ux < 0 ? (-table.HL + R - ox) / ux : Infinity;
+  const cy = uy > 0 ? (table.HW - R - oy) / uy : uy < 0 ? (-table.HW + R - oy) / uy : Infinity;
+  const L = Math.min(g === 'full' ? tune.guide_obj_len_full : tune.guide_obj_len_ghost, Math.min(cx, cy) - R);
+  objRing.visible = true; objRing.position.copy(V3(ox, oy, 0.0012));
+  const sx = ox + ux * R, sy = oy + uy * R, ow = tune.obj_line_width / 1000;
   const k = Math.max(0, Math.min(1, (q.cut * 180 / Math.PI - tune.cone_from) / Math.max(1, tune.cone_to - tune.cone_from)));
   const half = tune.cone_max * Math.PI / 180 * k * k * (3 - 2 * k);
-  if (half > 0.004) setCone(sx, sy, q.objDir, L, half);
-  else setRibbon(ribbons[1], sx, sy, sx + Math.cos(q.objDir) * L, sy + Math.sin(q.objDir) * L, w);
+  flowTex.offset.x = -((state.t * tune.obj_line_flow / FLOW_GAP) % 1);
+  if (L > 0.02) {
+    if (half > 0.004) setCone(sx, sy, q.objDir, L, half, ow);
+    else setObjArrow(sx, sy, q.objDir, L, ow);
+  }
   if (g === 'full' && q.thin > 0.05 && !path) setRibbon(ribbons[2], q.gx, q.gy, q.gx + q.tgx * 0.28 * q.thin, q.gy + q.tgy * 0.28 * q.thin, w * 0.8);
 }
 
