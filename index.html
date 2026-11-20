@@ -44,7 +44,8 @@ const SERIF = 'Georgia, "Times New Roman", serif';
 const TITLE = 'Long Pot';
 const CONTROLS = TOUCH ? [
   'Swipe sideways to aim. Roll the wheel on the left for fine aim.',
-  'Pull the cue on the right down, then let go to strike: further is harder.',
+  'Swipe down on the table to look from a little higher, up to come back down.',
+  'Only the cue on the right strikes: pull it down, then let go. Further is harder.',
   'Tap or drag on the cue-ball diagram: where the tip hits.',
   'Two fingers: walk round the table. Pinch: zoom. Top view: the button.',
   'Menu: pause. The back gesture pauses too.',
@@ -197,12 +198,17 @@ canvas.addEventListener('pointermove', e => {
   if (ptr.mode === 'undecided') {
     ptr.ax += dx; ptr.ay += dy;
     if (Math.abs(ptr.ax) + Math.abs(ptr.ay) > 6) {
-      ptr.mode = Math.abs(ptr.ax) >= Math.abs(ptr.ay) || ptr.ay < 0 ? 'aim' : 'stroke';
+      // a phone never strikes from the table: only the cue on the right does; an up or down
+      // swipe on the table raises or lowers the view instead
+      if (TOUCH) ptr.mode = Math.abs(ptr.ax) >= Math.abs(ptr.ay) ? 'aim' : 'lift';
+      else ptr.mode = Math.abs(ptr.ax) >= Math.abs(ptr.ay) || ptr.ay < 0 ? 'aim' : 'stroke';
       if (ptr.mode === 'aim') turnAim(-ptr.ax * tune.aim_drag * Math.PI / 180 * (ptr.shift ? tune.aim_fine : 1));
+      else if (ptr.mode === 'lift') liftView(ptr.ay);
       else { ptr.pull = ptr.ay; ptr.maxPull = ptr.pull; }
     }
     return;
   }
+  if (ptr.mode === 'lift') { liftView(dy); return; }
   if (ptr.mode === 'aim') turnAim(-dx * tune.aim_drag * Math.PI / 180 * (ptr.shift ? tune.aim_fine : 1));
   if (ptr.mode === 'stroke' && !ptr.struck) {
     ptr.pull = Math.max(-20, Math.min(tune.stroke_pull, ptr.pull + dy));
@@ -294,7 +300,8 @@ function sfx(kind, strength) {
 
 // ---- The table: physics geometry and the sim ----------------------------------------------
 const PHYS_KEYS = ['mu_slide', 'mu_roll', 'spin_decel', 'ball_restitution', 'throw_mu_min', 'throw_mu_peak', 'throw_falloff',
-  'cushion_restitution', 'cushion_friction', 'cushion_height', 'cue_mass', 'cue_end_mass', 'tip_restitution'];
+  'cushion_restitution', 'cushion_friction', 'cushion_height', 'cue_mass', 'cue_end_mass', 'tip_restitution',
+  'tip_max', 'cue_elev_max', 'cue_reach', 'cue_shaft_r'];
 function physParams() { const p = {}; for (const k of PHYS_KEYS) p[k] = tune[k]; return p; }
 function tableParams() {
   return { corner_throat: tune.corner_throat, corner_jaw_radius: tune.corner_jaw_radius, middle_throat: tune.middle_throat,
@@ -417,7 +424,7 @@ function rebuildTable() {
   const cushionMat = new THREE.MeshStandardMaterial({ color: 0x176b34, roughness: 0.9, envMapIntensity: 0.03 });
   for (const pc of table.pieces) {
     const sh = new THREE.Shape(pc.poly.map(([x, y]) => new THREE.Vector2(x, y)));
-    const g = new THREE.ExtrudeGeometry(sh, { depth: 0.042, bevelEnabled: false, curveSegments: 12 });
+    const g = new THREE.ExtrudeGeometry(sh, { depth: LP.SPEC.CUSHION_TOP, bevelEnabled: false, curveSegments: 12 });
     const m = new THREE.Mesh(g, cushionMat); m.rotation.x = -Math.PI / 2; m.castShadow = !CHEAP; m.receiveShadow = true;
     tableGroup.add(m);
   }
@@ -550,6 +557,32 @@ const ghost = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({ color: 0xfff
 ghost.visible = false; world.add(ghost);
 const ghostRing = new THREE.Mesh(new THREE.RingGeometry(R * 0.92, R, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide }));
 ghostRing.rotation.x = -Math.PI / 2; ghostRing.visible = false; world.add(ghostRing);
+// The assist's cue-ball path: a flat strip on the cloth along the played-out path, and a ghost
+// cue ball where it comes to rest.
+const pathMat = new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
+const pathMesh = new THREE.Mesh(new THREE.BufferGeometry(), pathMat);
+pathMesh.visible = false; pathMesh.frustumCulled = false; world.add(pathMesh);
+const restGhost = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.42, depthWrite: false }));
+restGhost.visible = false; world.add(restGhost);
+const restRing = new THREE.Mesh(new THREE.RingGeometry(R * 0.86, R * 1.06, 40), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide }));
+restRing.rotation.x = -Math.PI / 2; restRing.visible = false; world.add(restRing);
+/** Rebuilds the path strip through pts ([x, y] on the cloth), width metres wide. */
+function setPath(pts, width) {
+  const n = pts.length;
+  if (n < 2) { pathMesh.visible = false; return; }
+  const pos = new Float32Array(n * 6), idx = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
+    const ox = -ty * width / 2, oy = tx * width / 2;
+    const l = V3(pts[i][0] + ox, pts[i][1] + oy, 0.0013), r = V3(pts[i][0] - ox, pts[i][1] - oy, 0.0013);
+    pos.set([l.x, l.y, l.z, r.x, r.y, r.z], i * 6);
+    if (i < n - 1) idx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(idx);
+  pathMesh.geometry.dispose(); pathMesh.geometry = g; pathMesh.visible = true;
+}
 const zoneRing = new THREE.Mesh(new THREE.RingGeometry(0.97, 1, 72), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.75, depthWrite: false, side: THREE.DoubleSide }));
 zoneRing.rotation.x = -Math.PI / 2; zoneRing.visible = false; world.add(zoneRing);
 const zoneFill = new THREE.Mesh(new THREE.CircleGeometry(1, 72), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.08, depthWrite: false }));
@@ -566,7 +599,8 @@ function setRibbon(m, ax, ay, bx, by, width) {
 
 // ---- Camera: behind the cue ball to aim, overhead on V, free orbit on right-drag -------------
 const cam = { mode: 'title', yaw: 0, pitch: 0.4, dist: 3, tx: 0, ty: 0, th: 0, // current
-  yawOff: 0, pitchOff: 0, zoom: 1, topZoom: 1, preferTop: false, free: null, last: 0 };
+  yawOff: 0, pitchOff: 0, zoom: 1, topZoom: 1, preferTop: false, free: null, last: 0,
+  lift: 0 }; // lift: radians the phone's down-swipe raised the aim view; kept from turn to turn
 function camWant() {
   const t = state ? state.t : 0;
   if (scene === 'title' || scene === 'levels') return { yaw: -0.6 + t * 0.04, pitch: 0.42, dist: 3.6, tx: 0.2, ty: 0, th: 0 };
@@ -580,7 +614,7 @@ function camWant() {
   }
   // aim
   const a = state.aim + cam.yawOff;
-  return { yaw: a, pitch: tune.cam_pitch * Math.PI / 180 + cam.pitchOff, dist: tune.cam_dist * cam.zoom,
+  return { yaw: a, pitch: tune.cam_pitch * Math.PI / 180 + cam.pitchOff + cam.lift, dist: tune.cam_dist * cam.zoom,
     tx: sim.x[0] + Math.cos(state.aim) * 0.18, ty: sim.y[0] + Math.sin(state.aim) * 0.18, th: R };
 }
 function angLerp(a, b, k) { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * k; }
@@ -612,6 +646,16 @@ function cameraZoom(dy) {
   else cam.zoom = Math.max(0.35, Math.min(4, cam.zoom * f));
 }
 function camForTurn() { cam.free = null; cam.yawOff = 0; cam.pitchOff = 0; cam.mode = cam.preferTop ? 'top' : 'aim'; }
+/** A phone's up or down swipe on the table: down (dy > 0) raises the aim view a little, up lowers it. */
+function liftView(dy) {
+  cam.lift = Math.max(0, Math.min(tune.touch_lift_max * Math.PI / 180, cam.lift + dy * tune.touch_lift_drag * Math.PI / 180));
+}
+/** Every new game (a training level, a retry, a frame) starts in the player's view behind the
+ *  cue ball: no overhead preference, no orbit, no zoom, no lift carried over. */
+function resetCameraForGame() {
+  cam.preferTop = false; cam.free = null; cam.yawOff = 0; cam.pitchOff = 0; cam.lift = 0;
+  cam.zoom = 1; cam.topZoom = 1; cam.mode = 'aim';
+}
 
 // ---- Scenes: keep only the day-one screens the brief calls for ----------------------------
 let scene, state;
@@ -646,6 +690,7 @@ function startLevel(i) {
   frame.startPhase(sim); frame.inHand = def.cue === 'D';
   Object.assign(state, { mode: 'training', level: i, def, zone: lay.zone, placed: lay.placed, guide: def.guide, shots: 0, pots: 0, human: true, goal: false, failed: '' });
   scene = 'play';
+  resetCameraForGame();
   beginTurn(true);
   say(TOUCH && def.hint_touch ? def.hint_touch : def.hint, 7);
 }
@@ -657,6 +702,7 @@ function startFrame(diff, breaker = 0) { // breaker: 0 you, 1 the computer
   frame.startPhase(sim); frame.inHand = true; frame.player = breaker;
   Object.assign(state, { mode: 'frame', aiLevel: LP.LEVELS[diff], aiName: LP.LEVEL_NAME[LP.LEVELS[diff]], guide: 'ghost', zone: null, breaker });
   scene = 'play';
+  resetCameraForGame();
   beginTurn(true);
   say(breaker ? 'The computer breaks.' : TOUCH ? 'You break. Drag the cue ball into the D, then Place.' : 'You break. Place the cue ball in the D, then Enter.', 4);
 }
@@ -707,10 +753,43 @@ function beginStrike(power) {
   state.phase = 'strike'; state.phaseT = 0; state.strikePower = power; state.strikeFrom = Math.max(0.02, state.pull);
   state.pending = { ang: state.aim, V0: cueSpeed(power), a: state.tipA, b: state.tipB };
 }
+// What the referee needs from the moment of the stroke: the position (to put the balls back
+// after a Foul and a Miss), touching balls, whether a ball on could be seen, and the scores.
+let shot = null;
+const shotSnap = new LP.Sim(table, LP.N);
+function shotContext(ang) {
+  shotSnap.copyFrom(sim);
+  const tg = frame.targets(sim), touching = [];
+  for (let i = 1; i < LP.N; i++) if (sim.on[i] && Math.hypot(sim.x[i] - sim.x[0], sim.y[i] - sim.y[0]) < 2 * R + 5e-4) touching.push(i);
+  const touchOn = touching.some(i => tg.includes(i));
+  const aimed = guideFor(ang).ball;
+  return {
+    tg, touching, touchOn, push: false, pushBall: -1,
+    clear: touchOn || tg.some(t => LP.anyPartClear(sim, t)),
+    full: touchOn || tg.some(t => LP.fullBallClear(sim, t)),
+    needBefore: Math.abs(frame.scores[0] - frame.scores[1]) > frame.pointsLeft(sim),
+    replay: !!(state.replayed), declared: aimed, minGap: Infinity, attemptOK: false,
+    before: { phase: frame.phase, inHand: frame.inHand },
+  };
+}
+/** Each physics substep of a shot: how close the cue ball came to a ball on before its first
+ *  contact (a fair attempt to escape a snooker), and whether a touching ball was pushed. */
+function watchShot() {
+  if (!shot) return;
+  const rec = sim.rec;
+  if (rec.firstHit < 0) {
+    for (const t of shot.tg) if (sim.on[t]) shot.minGap = Math.min(shot.minGap, Math.hypot(sim.x[t] - sim.x[0], sim.y[t] - sim.y[0]) - 2 * R);
+  } else if (!shot.pushChecked) {
+    shot.pushChecked = true;
+    if (shot.touching.includes(rec.firstHit) && rec.firstTime < 2e-3) { shot.push = true; shot.pushBall = rec.firstHit; }
+  }
+}
 function strikeNow(s) {
   sim.setParams(physParams());
   sim.onEvent = onSimEvent;
+  shot = shotContext(s.ang); state.replayed = false;
   sim.strike(s.ang, s.V0, s.a, s.b);
+  watchShot();
   state.shotAng = s.ang; state.phase = 'roll'; state.phaseT = 0; state.pull = 0; state.power = 0;
   if (!cam.free && cam.mode !== 'top') cam.mode = 'watch';
 }
@@ -739,15 +818,18 @@ function startAITurn() {
 // After a shot comes to rest: the rules, the level's goal, the message, then the next turn.
 function judgeShot() {
   const rec = sim.rec, brkBefore = frame.brk, me = frame.player;
-  const res = frame.judge(sim, rec);
+  if (shot) shot.attemptOK = shot.minGap <= tune.miss_attempt_gap;
+  const res = frame.judge(sim, rec, shot);
   state.shots++;
   state.lastRes = res;
   const who = p => (state.mode === 'training' ? 'You' : p === 0 ? 'You' : 'The computer');
   const names = res.potted.map(i => LP.NAME[LP.KIND[i]]).join(', ');
   if (state.mode === 'training') { trainingCheck(res, rec, brkBefore + res.pts); }
   else {
-    if (res.foul) {
-      say(`Foul: ${res.reason}. ${res.foulPts} away to ${me === 0 ? 'the computer' : 'you'}.${res.freeBall ? ' Free ball.' : ''}`, 3.2);
+    if (res.threeMiss) {
+      say(`Foul and a miss, the third from the same position after a warning: the frame goes to ${me === 0 ? 'the computer' : 'you'}.`, 4);
+    } else if (res.foul) {
+      say(`${res.miss ? 'Foul and a miss' : 'Foul'}: ${res.reason}. ${res.foulPts} away to ${me === 0 ? 'the computer' : 'you'}.${res.freeBall ? ' Free ball.' : ''}`, 3.2);
     } else if (res.pts > 0) say(`${names}: ${res.pts} ${res.pts === 1 ? 'point' : 'points'}. Break ${frame.brk}.`, 2);
     else say(`${who(me)} missed. ${frame.player === 0 ? 'Your' : 'The computer\'s'} turn.`, 2);
   }
@@ -801,13 +883,29 @@ function afterJudge() {
   if (frame.over) { finishFrame(); return; }
   if (frame.canPutBack) {
     if (frame.player === 0) { state.phase = 'choice'; state.human = true; camForTurn(); return; } // you choose
-    if (!LP.wantsToPlay(sim, frame, table, tune, state.aiLevel)) { frame.putBack(); say('The computer asks you to play again.', 2.6); }
+    // the computer chooses: play on when it likes the table; else, after a miss, the balls back
+    // (another chance at a miss, and the frame after a warning); else you play again
+    if (LP.wantsToPlay(sim, frame, table, tune, state.aiLevel)) frame.playOn();
+    else if (frame.canReplace) { replaceBalls(); say(`The computer asks for the balls back: you play again from where you were.${frame.warned ? ' Warning: another miss loses the frame.' : ''}`, 3.4); }
+    else { frame.putBack(); say('The computer asks you to play again.', 2.6); }
   }
   beginTurn();
 }
-function choose(play) {
+/** After a Foul and a Miss: every ball back where it was when the offender struck. */
+function replaceBalls() {
+  sim.copyFrom(shotSnap); sim.onEvent = null; sim.clearRec();
+  drops.length = 0;
+  frame.replace(shot.before);
+  state.replayed = true;
+}
+/** Your choice after the computer's foul: 'play' from here, 'again' (it plays again from here),
+ *  or 'replace' (after a miss: the balls back, it plays again from where it was). */
+function choose(how) {
   if (state.phase !== 'choice') return;
-  if (!play) { frame.putBack(); say('The computer must play again.', 2); }
+  if (how === 'play') frame.playOn();
+  else if (how === 'again') { frame.putBack(); say('The computer must play again.', 2); }
+  else if (how === 'replace' && frame.canReplace) { replaceBalls(); say(`The balls go back. The computer plays again.${frame.warned ? ' Warning: another miss loses it the frame.' : ''}`, 3); }
+  else return;
   beginTurn();
 }
 function finishFrame() {
@@ -851,16 +949,70 @@ function guideFor(ang) {
   }
   return out;
 }
+/** The assist is on at the lower difficulties: the first training levels, and frames against the
+ *  weaker computer players (how many of each: config.js, assist_*). */
+function assistOn() {
+  if (state.mode === 'training') return state.level < tune.assist_training_levels;
+  if (state.mode === 'frame') return LP.LEVELS.indexOf(state.aiLevel) < tune.assist_ai_levels;
+  return false;
+}
+// The cue ball's path at the power applied: the shot played out on a copy of the table with the
+// game's own physics, aim and spin, again only when the shot or the table changes.
+const predictSim = new LP.Sim(table, LP.N);
+let predictKey = '', predicted = null;
+/** A number that changes whenever any ball on the table moves, for caches keyed on the layout. */
+function layoutKey() {
+  let lay = 0; for (let i = 0; i < LP.N; i++) if (sim.on[i]) lay += sim.x[i] * (i + 1) + sim.y[i] * (i + 31);
+  return lay.toFixed(6);
+}
+function predictCuePath(power) {
+  const key = `${state.aim.toFixed(5)}|${power.toFixed(3)}|${state.tipA.toFixed(3)}|${state.tipB.toFixed(3)}|${layoutKey()}`;
+  if (key === predictKey) return predicted;
+  predictKey = key;
+  const p = predictSim;
+  p.copyFrom(sim); p.setParams(physParams()); p.onEvent = null;
+  p.strike(state.aim, cueSpeed(power), state.tipA, state.tipB);
+  const h = STEP / Math.max(1, Math.round(tune.physics_substeps)), steps = Math.ceil(tune.assist_path_time / h);
+  const pts = [[p.x[0], p.y[0]]];
+  let from = -1; // the first contact: the path is drawn on from there, the aim line covers the rest
+  for (let s = 0; s < steps; s++) {
+    p.step(h);
+    const x = p.x[0], y = p.y[0], last = pts[pts.length - 1];
+    if (from < 0 && (p.rec.firstHit >= 0 || p.rec.cushions > 0)) { pts.push([x, y]); from = pts.length - 1; }
+    else if ((x - last[0]) ** 2 + (y - last[1]) ** 2 > 0.008 * 0.008 || !p.on[0]) pts.push([x, y]);
+    if (!p.on[0] || !p.mov[0]) break; // potted, or at rest
+  }
+  predicted = { pts: from > 0 ? pts.slice(from) : pts, potted: !p.on[0], rest: pts[pts.length - 1] };
+  return predicted;
+}
 function updateGuides() {
   for (const r of ribbons) r.visible = false; ghost.visible = false; ghostRing.visible = false;
+  pathMesh.visible = false; restGhost.visible = false; restRing.visible = false;
   const g = state.guide;
   const showing = scene === 'play' && state.phase === 'aim' && state.human || state.phase === 'strike' && state.human;
   if (!showing || g === 'none') return;
-  const q = guideFor(state.aim), w = 0.0022;
+  const assist = assistOn();
+  const w = assist ? tune.assist_line_width / 1000 : 0.0022;
+  guideMat.opacity = assist ? tune.assist_line_opacity : 0.55;
+  guideMat2.opacity = assist ? tune.assist_line_opacity * 0.85 : 0.45;
+  ghost.material.opacity = assist ? 0.32 : 0.22;
+  ghostRing.material.opacity = assist ? 0.95 : 0.7;
+  // the cue ball's own path, as far as the power applied carries it
+  const power = state.phase === 'strike' ? state.strikePower : state.power;
+  const path = assist && power > 0.004 ? predictCuePath(power) : null;
+  if (path) {
+    pathMat.color.setHex(path.potted ? 0xff5a4a : 0xfff3c4); pathMat.opacity = tune.assist_line_opacity;
+    setPath(path.pts, w);
+    if (!path.potted) {
+      restGhost.visible = restRing.visible = true;
+      restGhost.position.copy(V3(path.rest[0], path.rest[1], R)); restRing.position.copy(V3(path.rest[0], path.rest[1], 0.0014));
+    }
+  }
+  const q = guideFor(state.aim);
   if (g === 'short') { const L = Math.min(q.t, 0.4); setRibbon(ribbons[0], q.cx, q.cy, q.cx + q.dx * L, q.cy + q.dy * L, w); return; }
   setRibbon(ribbons[0], q.cx + q.dx * R, q.cy + q.dy * R, q.gx, q.gy, w);
   if (q.ball < 0) {
-    if (g !== 'ghost') setRibbon(ribbons[1], q.gx, q.gy, q.gx + q.rx * 0.4, q.gy + q.ry * 0.4, w);
+    if (g !== 'ghost' && !path) setRibbon(ribbons[1], q.gx, q.gy, q.gx + q.rx * 0.4, q.gy + q.ry * 0.4, w);
     return;
   }
   if (g === 'line') return;
@@ -869,7 +1021,7 @@ function updateGuides() {
   const objL = g === 'full' ? 0.55 : 0.16;
   const ox = sim.x[q.ball], oy = sim.y[q.ball];
   setRibbon(ribbons[1], ox + q.nx * R, oy + q.ny * R, ox + q.nx * (R + objL), oy + q.ny * (R + objL), w);
-  if (g === 'full' && q.thin > 0.05) setRibbon(ribbons[2], q.gx, q.gy, q.gx + q.tgx * 0.28 * q.thin, q.gy + q.tgy * 0.28 * q.thin, w * 0.8);
+  if (g === 'full' && q.thin > 0.05 && !path) setRibbon(ribbons[2], q.gx, q.gy, q.gx + q.tgx * 0.28 * q.thin, q.gy + q.tgy * 0.28 * q.thin, w * 0.8);
 }
 
 // ---- Drawing the 3D world each frame ------------------------------------------------------
@@ -899,9 +1051,12 @@ function render3D() {
     if (state.phase === 'strike') pull = state.strikeFrom * Math.max(0, 1 - state.phaseT / 0.07);
     if (state.phase === 'aiThink' || state.phase === 'choice') pull = 0.25;
     if (state.phase === 'aiAddress') { pull = state.aiPull; }
-    const el = 0.055, dh = [Math.cos(ang), Math.sin(ang)], right = [Math.sin(ang), -Math.cos(ang)];
-    const c = Math.sqrt(Math.max(0, 1 - a * a - b * b));
-    const px = sim.x[0] + R * (-dh[0] * c + a * right[0]), py = sim.y[0] + R * (-dh[1] * c + a * right[1]), ph = R + R * b;
+    // the tip where it will actually strike, and the cue raised as far as it must be
+    const rc = tipReach(); a = rc.a; b = rc.b;
+    const el = Math.max(0.055, rc.el), dh = [Math.cos(ang), Math.sin(ang)], right = [Math.sin(ang), -Math.cos(ang)];
+    const c = Math.sqrt(Math.max(0, 1 - a * a - b * b)), se = Math.sin(el), ce = Math.cos(el);
+    const back = -c * ce + b * se; // the contact point along the aim, in ball radii
+    const px = sim.x[0] + R * (dh[0] * back + a * right[0]), py = sim.y[0] + R * (dh[1] * back + a * right[1]), ph = R + R * (c * se + b * ce);
     const gap = 0.004 + pull * 0.24;
     const dir = new THREE.Vector3(dh[0] * Math.cos(el), -Math.sin(el), -dh[1] * Math.cos(el)).normalize();
     cue.position.copy(V3(px, py, ph)).addScaledVector(dir, -gap);
@@ -1066,8 +1221,31 @@ function ballOn(x, y, align = 'left') {
   text(label, sx + bw + 8, y + 1, 15, UI.text, 'left', FONT, '600');
 }
 
+// Near a cushion or a ball behind the cue ball the cue has to be raised to clear it, and the
+// tip can't reach every spot: a grid over the cue-ball diagram of the spots it can, again only
+// when the aim or the table changes; and the spot actually played, with the cue's elevation.
+let reachKey = '', reach = null;
+function tipReach() {
+  const lim = tune.tip_max, n = 13;
+  const key = `${state.aim.toFixed(3)}|${state.tipA.toFixed(3)}|${state.tipB.toFixed(3)}|${layoutKey()}|${lim}|${tune.cue_elev_max}|${tune.cue_reach}|${tune.cue_shaft_r}`;
+  if (key === reachKey && reach) return reach;
+  if (reach && (state.phase === 'roll' || state.phase === 'judge')) return reach; // balls moving: nothing to choose
+  reachKey = key;
+  sim.setParams(physParams());
+  const max = tune.cue_elev_max * Math.PI / 180, cells = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const a = (i / (n - 1) * 2 - 1) * lim, b = (j / (n - 1) * 2 - 1) * lim;
+    if (a * a + b * b > lim * lim * 1.02) continue;
+    if (sim.cueElevation(state.aim, a, b) > max) cells.push([a, b]);
+  }
+  const [ea, eb] = sim.on[0] ? sim.reachTip(state.aim, state.tipA, state.tipB) : [state.tipA, state.tipB];
+  const el = sim.on[0] ? Math.min(max, sim.cueElevation(state.aim, ea, eb)) : 0;
+  reach = { blocked: cells, cell: 2 * lim / (n - 1), a: ea, b: eb, el };
+  return reach;
+}
 function drawSpinWidget() {
   const r = TOUCH ? 58 : 46, cx = W - r - 28, cy = H - r - 40;
+  const rc = tipReach();
   ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 5;
   const g = ctx.createRadialGradient(cx - r * 0.38, cy - r * 0.42, r * 0.08, cx, cy, r);
   g.addColorStop(0, '#ffffff'); g.addColorStop(0.65, '#ece8de'); g.addColorStop(1, '#b9b3a6');
@@ -1075,11 +1253,25 @@ function drawSpinWidget() {
   ctx.strokeStyle = 'rgba(20,24,22,0.18)'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(cx - r * 0.86, cy); ctx.lineTo(cx + r * 0.86, cy); ctx.moveTo(cx, cy - r * 0.86); ctx.lineTo(cx, cy + r * 0.86); ctx.stroke();
   ctx.beginPath(); ctx.arc(cx, cy, r * tune.tip_max, 0, Math.PI * 2); ctx.setLineDash([2, 4]); ctx.stroke(); ctx.setLineDash([]);
-  const tx = cx + state.tipA * r, ty = cy - state.tipB * r;
+  if (rc.blocked.length) { // the spots the raised cue can't reach, shaded inside the tip circle
+    ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, r * tune.tip_max + rc.cell * r / 2, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = 'rgba(38,42,40,0.5)';
+    const s = rc.cell * r + 0.6;
+    for (const [a, b] of rc.blocked) ctx.fillRect(cx + a * r - s / 2, cy - b * r - s / 2, s, s);
+    ctx.restore();
+  }
+  const moved = Math.hypot(rc.a - state.tipA, rc.b - state.tipB) > 0.01;
+  if (moved) { // where you put the tip, out of reach: a ring; the dot is where it will strike
+    ctx.beginPath(); ctx.arc(cx + state.tipA * r, cy - state.tipB * r, TOUCH ? 8 : 6.5, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(47,111,224,0.8)'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+  }
+  const tx = cx + rc.a * r, ty = cy - rc.b * r;
   ctx.beginPath(); ctx.arc(tx, ty, TOUCH ? 9 : 7.5, 0, Math.PI * 2); ctx.fillStyle = '#2f6fe0'; ctx.fill();
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.stroke();
-  const sx = state.tipB > 0.12 ? 'Top' : state.tipB < -0.12 ? 'Screw' : 'Centre', side = state.tipA > 0.1 ? ' · right' : state.tipA < -0.1 ? ' · left' : '';
+  const sx = rc.b > 0.12 ? 'Top' : rc.b < -0.12 ? 'Screw' : 'Centre', side = rc.a > 0.1 ? ' · right' : rc.a < -0.1 ? ' · left' : '';
   caps(sx + side, cx, cy + r + 18, 12, UI.dim, 'center', 1.4);
+  const deg = Math.round(rc.el * 180 / Math.PI);
+  if (deg >= 2) caps(`Cue raised ${deg}°`, cx, cy - r - 16, 12, UI.gold, 'center', 1.4);
   if (state.human && (state.phase === 'aim' || state.phase === 'place')) {
     hudHits.push({ x: cx - r, y: cy - r, w: 2 * r, h: 2 * r, drag: true, fn: (lx, ly) => {
       let a = (lx - cx) / r, b = -(ly - cy) / r; const m = Math.hypot(a, b), lim = tune.tip_max;
@@ -1117,7 +1309,7 @@ function drawTouchCue() {
   text(`${Math.round(p * 100)}%`, mx, y + h + 18, 15, UI.text, 'center', FONT, '600');
   if (can) hudHits.push({ x: x - 6, y: y - 36, w: w + 12, h: h + 72, drag: true,
     fn: (lx, ly) => { if (ptr.slideY == null) ptr.slideY = ly; const q = Math.max(0, Math.min(1, (ly - ptr.slideY) / h)); state.power = q; state.pull = q; },
-    up: () => { const q = state.power; ptr.slideY = null; if (q > 0.03) beginStrike(q); else { state.power = 0; state.pull = 0; } },
+    up: () => { const q = state.power; ptr.slideY = null; if (q >= tune.touch_pull_min) beginStrike(q); else { state.power = 0; state.pull = 0; } },
     cancel: () => { ptr.slideY = null; state.power = 0; state.pull = 0; } });
 }
 function drawFineWheel() {
@@ -1224,17 +1416,24 @@ function drawPlayHUD() {
   const ph = state.phase;
   let hint = '';
   if (ph === 'place') hint = TOUCH ? 'Ball in hand: drag the cue ball inside the D, then Place' : 'Ball in hand: drag the cue ball inside the D (or the arrows), then Enter';
-  else if (ph === 'aim') hint = TOUCH ? 'Swipe sideways to aim · pull the cue on the right down, then let go' : 'Drag sideways to aim · hold, pull down, push up to strike (or hold Space)';
+  else if (ph === 'aim') hint = TOUCH ? 'Swipe sideways to aim, down to look from higher · pull the cue on the right to strike' :'Drag sideways to aim · hold, pull down, push up to strike (or hold Space)';
   else if (ph === 'aiThink') hint = 'The computer is studying the table';
   if (hint) text(hint, W / 2, state.mode === 'frame' ? H - 106 : H - 28, 14, UI.dim, 'center', FONT, '500');
   if (ph === 'place') button('Place', W / 2 - 90, H - (state.mode === 'frame' ? 172 : 96) - (TOUCH ? 8 : 0), 180, TOUCH ? 52 : 44, confirmPlace, { primary: true, key: 'Enter' });
   if (ph === 'choice') {
-    const w = 580, x = (W - w) / 2, y = H / 2 - 84;
+    const three = frame.canReplace, w = three ? 820 : 580, x = (W - w) / 2, y = H / 2 - 84;
     glass(x, y, w, 168, 22);
-    text('The computer fouled', W / 2, y + 34, 22, UI.text, 'center', FONT, '700');
-    text(frame.freeBall ? 'Free ball: any ball can stand in for the ball on.' : 'Play from where the balls lie, or make it play again.', W / 2, y + 64, 15, frame.freeBall ? UI.gold : UI.dim);
-    button('Play from here', x + 28, y + 98, 250, 48, () => choose(true), { primary: true, key: '1' });
-    button('It plays again', x + w - 278, y + 98, 250, 48, () => choose(false), { key: '2' });
+    text(three ? 'Foul and a miss by the computer' : 'The computer fouled', W / 2, y + 34, 22, UI.text, 'center', FONT, '700');
+    const sub = frame.freeBall ? 'Free ball: any ball can stand in for the ball on.' :
+      three && frame.missRun >= 2 ? 'Put the balls back and it is warned: one more miss loses it the frame.' :
+      three ? 'Play from where the balls lie, make it play again, or put the balls back.' : 'Play from where the balls lie, or make it play again.';
+    text(sub, W / 2, y + 64, 15, frame.freeBall || (three && frame.missRun >= 2) ? UI.gold : UI.dim);
+    const bw = three ? 244 : 250, gap = three ? (w - 56 - 3 * bw) / 2 : 0;
+    button('Play from here', x + 28, y + 98, bw, 48, () => choose('play'), { primary: true, key: '1' });
+    if (three) {
+      button('It plays again', x + 28 + bw + gap, y + 98, bw, 48, () => choose('again'), { key: '2' });
+      button('Put the balls back', x + w - 28 - bw, y + 98, bw, 48, () => choose('replace'), { key: '3' });
+    } else button('It plays again', x + w - 278, y + 98, 250, 48, () => choose('again'), { key: '2' });
   }
   if (state.help) {
     const hx = TOUCH ? 92 : 18, hw = TOUCH ? 640 : 620, hh = 46 + CONTROLS.length * 26, hy = H - hh - (state.mode === 'frame' ? 104 : 54);
@@ -1364,14 +1563,15 @@ const scenes = {
         if (state.phaseT >= 0.07) strikeNow(state.pending);
       } else if (ph === 'roll') {
         const n = Math.max(1, Math.round(tune.physics_substeps)), h = STEP / n;
-        for (let s = 0; s < n; s++) sim.step(h);
+        for (let s = 0; s < n; s++) { sim.step(h); watchShot(); }
         spinBalls();
         if (!sim.anyMoving()) judgeShot();
       } else if (ph === 'judge') {
         if (state.phaseT >= tune.judge_pause) afterJudge();
       } else if (ph === 'choice') {
-        if (pressed('Digit1') || pressed('Numpad1')) choose(true);
-        else if (pressed('Digit2') || pressed('Numpad2')) choose(false);
+        if (pressed('Digit1') || pressed('Numpad1')) choose('play');
+        else if (pressed('Digit2') || pressed('Numpad2')) choose('again');
+        else if (pressed('Digit3') || pressed('Numpad3')) choose('replace');
       } else if (ph === 'aiThink') {
         let done = false;
         for (let k = 0; k < tune.ai_sims_per_step; k++) { const r = aiJob.gen.next(); if (r.done) { done = true; break; } }

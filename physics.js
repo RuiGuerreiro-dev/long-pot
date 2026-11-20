@@ -12,7 +12,8 @@
 'use strict';
 (function () {
   const G = 9.81;
-  const SPEC = { L: 3.569, W: 1.778, R: 0.02625, M: 0.142, CUSHION_W: 0.05, RAIL_W: 0.115 };
+  // CUSHION_TOP and RAIL_TOP: heights above the cloth the cue must clear behind the cue ball, m
+  const SPEC = { L: 3.569, W: 1.778, R: 0.02625, M: 0.142, CUSHION_W: 0.05, RAIL_W: 0.115, CUSHION_TOP: 0.042, RAIL_TOP: 0.053 };
 
   /** Builds the table's collision geometry and the outlines the renderer draws from it.
    *  p: corner_throat, corner_jaw_radius, middle_throat, middle_jaw_radius, pocket_fall. */
@@ -140,20 +141,99 @@
       return true;
     }
 
+    /** The cue's elevation (radians) needed to strike ball 0 along ang at tip offset (a, b): the
+     *  shaft has to pass over the cushion, the rail and any ball behind the cue ball, within the
+     *  reach of the bridge (P.cue_reach). a and b are in ball radii, in the cue's own frame (what
+     *  the player sees looking down the cue). Infinity: no elevation short of vertical clears. */
+    cueElevation(ang, a, b) {
+      const P = this.P, T = this.T, R = T.R;
+      if (!P || P.cue_reach == null) return 0;
+      const bx = -Math.cos(ang), by = -Math.sin(ang), rx = Math.sin(ang), ry = -Math.cos(ang);
+      const x0 = this.x[0], y0 = this.y[0], reach = P.cue_reach, sr = P.cue_shaft_r;
+      const obs = []; // [horizontal distance behind the cue ball's centre, height]
+      const exit = (hx, hy) => {
+        const tx = bx > 0 ? (hx - x0) / bx : bx < 0 ? (-hx - x0) / bx : Infinity;
+        const ty = by > 0 ? (hy - y0) / by : by < 0 ? (-hy - y0) / by : Infinity;
+        return Math.min(tx, ty);
+      };
+      const dc = exit(T.HL, T.HW), dr = exit(T.HL + T.CW, T.HW + T.CW);
+      if (dc < reach) obs.push([dc, SPEC.CUSHION_TOP]);
+      if (dr < reach) obs.push([dr, SPEC.RAIL_TOP]);
+      for (let j = 1; j < this.n; j++) {
+        if (!this.on[j]) continue;
+        const ox = this.x[j] - x0, oy = this.y[j] - y0, along = ox * bx + oy * by;
+        if (along <= 0 || along > reach + R) continue;
+        const lat = ox * rx + oy * ry - a * R; // across from the shaft's line
+        if (Math.abs(lat) >= R + sr) continue;
+        const half = Math.sqrt(Math.max(0, R * R - lat * lat));
+        obs.push([along - Math.sqrt(Math.max(0, (R + sr) ** 2 - lat * lat)), R + half]);
+      }
+      if (!obs.length) return 0;
+      const c = Math.sqrt(Math.max(0, 1 - a * a - b * b));
+      const clears = th => {
+        const se = Math.sin(th), ce = Math.cos(th);
+        const pz = R + R * (c * se + b * ce), back = R * (c * ce - b * se); // the tip's contact point
+        for (const [d, h] of obs) {
+          const run = d - back;
+          if (pz + Math.max(0, run) * se / ce < h + sr / ce) return false;
+        }
+        return true;
+      };
+      if (clears(0)) return 0;
+      const top = 85 * Math.PI / 180;
+      if (!clears(top)) return Infinity;
+      let lo = 0, hi = top;
+      for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (clears(mid)) hi = mid; else lo = mid; }
+      return hi;
+    }
+    /** The tip offset as it can actually be played along ang: unchanged when the cue clears at
+     *  P.cue_elev_max or less; else raised toward the top of the ball (and side reduced to stay
+     *  within P.tip_max) until it does. */
+    reachTip(ang, a, b) {
+      const P = this.P;
+      if (!P || P.cue_elev_max == null) return [a, b];
+      const max = P.cue_elev_max * Math.PI / 180, lim = P.tip_max || 0.5;
+      if (this.cueElevation(ang, a, b) <= max) return [a, b];
+      for (let nb = b + 0.02; nb <= lim + 1e-9; nb += 0.02) {
+        const na = Math.sign(a) * Math.min(Math.abs(a), Math.sqrt(Math.max(0, lim * lim - nb * nb)));
+        if (this.cueElevation(ang, na, nb) <= max) return [na, nb];
+      }
+      return [0, lim];
+    }
+
     /** The cue strikes ball 0. ang: the cue's direction; V0: cue speed; a: tip offset to the right
-     *  of centre, b: above centre, both in ball radii (level cue). */
+     *  of centre, b: above centre, both in ball radii, in the cue's own frame. The tip is first
+     *  brought within reach (reachTip), and the cue raised as cueElevation needs: a raised cue
+     *  drives the ball into the cloth (less speed along the table, and the cloth's grip eats
+     *  into the spin), and side on a raised cue swerves the ball (spin along its path). */
     strike(ang, V0, a, b) {
       const P = this.P, R = this.T.R, m = SPEC.M, M = P.cue_mass;
+      [a, b] = this.reachTip(ang, a, b);
+      const el = P.cue_elev_max == null ? 0 : Math.min(this.cueElevation(ang, a, b), P.cue_elev_max * Math.PI / 180);
+      const se = Math.sin(el), ce = Math.cos(el);
       const r2 = a * a + b * b;
       const J = (1 + P.tip_restitution) * V0 / (1 / M + 1 / m + (5 / (2 * m)) * r2);
       const v = J / m;
       const c = Math.sqrt(Math.max(0, 1 - a * a));
       const squirt = Math.atan((2.5 * a * c) / (1 + m / P.cue_end_mass + 2.5 * c * c)); // right side sends it left
       const dir = ang + squirt;
-      this.vx[0] = v * Math.cos(dir); this.vy[0] = v * Math.sin(dir);
+      let vx = v * ce * Math.cos(dir), vy = v * ce * Math.sin(dir);
       const k = 5 * J / (2 * m * R); // spin per radius of offset
-      this.wz[0] = k * a;
-      this.wx[0] = -k * b * Math.sin(ang); this.wy[0] = k * b * Math.cos(ang);
+      const cA = Math.cos(ang), sA = Math.sin(ang);
+      // spin = k (a (right x cue) + b (up' x cue)): level, a gives pure side and b top or back
+      let wx = k * (a * cA * se - b * sA), wy = k * (a * sA * se + b * cA);
+      const wz = k * a * ce;
+      if (el > 0) {
+        // the cloth stops the stroke's downward part (impulse J sin el); its friction acts on
+        // the slip at the cloth at once, at most enough to end it
+        const N = J * se, ux = vx - R * wy, uy = vy + R * wx, us = Math.hypot(ux, uy);
+        if (us > 1e-9) {
+          const F = Math.min(P.mu_slide * N, 2 / 7 * m * us), fx = -F * ux / us, fy = -F * uy / us, q = 5 / (2 * m * R);
+          vx += fx / m; vy += fy / m; wx += q * fy; wy -= q * fx;
+        }
+      }
+      this.vx[0] = vx; this.vy[0] = vy; this.wx[0] = wx; this.wy[0] = wy; this.wz[0] = wz;
+      this.lastElev = el;
       this.mov[0] = 1; this.on[0] = 1;
       this.clearRec();
       if (this.onEvent) this.onEvent('cue', 0, -1, V0);

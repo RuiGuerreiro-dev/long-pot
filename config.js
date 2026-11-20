@@ -38,6 +38,9 @@ window.CONFIG = {
   power_curve: { value: 1.6, min: 1, max: 3, step: 0.1 },             // >1 gives finer control at low power
   tip_max: { value: 0.5, min: 0.2, max: 0.6, step: 0.02 },            // furthest tip offset from centre, in ball radii (miscue beyond)
   physics_substeps: { value: 6, min: 2, max: 16, step: 1 },           // physics substeps per 1/60 s game step
+  cue_elev_max: { value: 40, min: 15, max: 80, step: 1 },             // the most the cue can be raised to clear a cushion or ball behind, degrees; a tip spot that needs more can't be played
+  cue_reach: { value: 0.35, min: 0.1, max: 0.8, step: 0.01 },         // how far behind the cue ball the shaft must clear things (the bridge's reach), m
+  cue_shaft_r: { value: 0.0065, min: 0.004, max: 0.012, step: 0.0005 }, // the cue shaft's radius near the tip, m
 
   // ---- Controls ----
   aim_drag: { value: 0.12, min: 0.02, max: 0.5, step: 0.01 },        // aim turn per pixel dragged, degrees
@@ -46,12 +49,23 @@ window.CONFIG = {
   stroke_pull: { value: 220, min: 80, max: 400, step: 10 },          // pixels of pull-back for full power
   key_power_time: { value: 1.6, min: 0.5, max: 4, step: 0.1 },       // seconds holding Space to reach full power
   spin_key_step: { value: 0.05, min: 0.01, max: 0.2, step: 0.01 },   // tip offset per W/A/S/D press, ball radii
+  touch_pull_min: { value: 0.05, min: 0, max: 0.3, step: 0.01 },     // phone: the least pull on the cue that strikes; less is let go
+  touch_lift_drag: { value: 0.12, min: 0.02, max: 0.5, step: 0.01 }, // phone: degrees the aim view rises per pixel swiped down on the table
+  touch_lift_max: { value: 20, min: 0, max: 45, step: 1 },           // phone: the highest the swipe raises the aim view, degrees
 
   // ---- Camera ----
   cam_dist: { value: 0.95, min: 0.3, max: 3, step: 0.05 },           // aim camera distance behind the cue ball, m
   cam_pitch: { value: 13, min: 2, max: 80, step: 1 },                // aim camera angle above the cloth, degrees
   cam_follow: { value: 9, min: 1, max: 30, step: 0.5 },              // how quickly the camera eases to its target, 1/s
   light_intensity: { value: 2.2, min: 0.2, max: 6, step: 0.05 },      // the canopy lights
+
+  // ---- Assist at the lower difficulties: a bolder aim line, and the cue ball's path and where it
+  // stops at the power applied (played out with the same physics) ----
+  assist_training_levels: { value: 2, min: 0, max: 8, step: 1 },     // training levels 1..N get it (3 and 4 teach cue-ball control)
+  assist_ai_levels: { value: 2, min: 0, max: 4, step: 1 },           // computer difficulties that get it, from the easiest: 2 = Beginner, Amateur
+  assist_line_width: { value: 5, min: 2, max: 12, step: 0.5 },        // aim line width with the assist, mm (2.2 without)
+  assist_line_opacity: { value: 0.9, min: 0.3, max: 1, step: 0.05 },
+  assist_path_time: { value: 12, min: 2, max: 30, step: 1 },          // longest the path plays the shot out, s
 
   // ---- Computer opponent (one row per difficulty: Beginner, Amateur, Pro, Champion) ----
   ai_beginner_aim_error: { value: 0.9, min: 0, max: 3, step: 0.01 },  // aim error, degrees (1 sigma)
@@ -76,6 +90,9 @@ window.CONFIG = {
   ai_champion_safety: { value: 0.08, min: -2, max: 1, step: 0.05 },
   ai_sims_per_step: { value: 6, min: 1, max: 40, step: 1 },           // shots the computer tries per game step while it thinks
   ai_think_min: { value: 1.1, min: 0, max: 5, step: 0.1 },            // shortest thinking pause, seconds
+
+  // ---- Referee ----
+  miss_attempt_gap: { value: 0.08, min: 0, max: 0.4, step: 0.01 },    // snookered: a failed escape is a fair attempt (no miss) if the cue ball came this close to a ball on, m
 
   // ---- Training ----
   judge_pause: { value: 1.1, min: 0.2, max: 3, step: 0.1 },           // pause on the result before the next shot, s

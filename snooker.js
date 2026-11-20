@@ -47,27 +47,52 @@
     for (const c of COLOURS) sim.place(ID[c], SPOT[c][0], SPOT[c][1]);
   }
 
-  /** Puts a colour back: its own spot, else the highest free spot, else as near its own spot as
-   *  it fits, toward the top cushion first. */
+  /** Puts a colour back (Section 3 Rule 7): its own spot, else the highest value spot free, else
+   *  as near its own spot as it fits between the spot and the top cushion, else (Pink and Black,
+   *  Rule 7(h)) as near its own spot as it fits on the line below it. */
   function respot(sim, i) {
     const c = KIND[i];
     const tryAt = (x, y) => { if (sim.free(x, y, i)) { sim.place(i, x, y); return true; } return false; };
     if (tryAt(...SPOT[c])) return;
     for (let k = COLOURS.length - 1; k >= 0; k--) if (tryAt(...SPOT[COLOURS[k]])) return;
-    for (let d = 0.001; d < 2 * HL; d += 0.001) {
-      if (tryAt(SPOT[c][0] + d, SPOT[c][1])) return;
-      if (tryAt(SPOT[c][0] - d, SPOT[c][1])) return;
-    }
+    for (let d = 0.001; SPOT[c][0] + d < HL - R; d += 0.001) if (tryAt(SPOT[c][0] + d, SPOT[c][1])) return;
+    for (let d = 0.001; SPOT[c][0] - d > -HL + R; d += 0.001) if (tryAt(SPOT[c][0] - d, SPOT[c][1])) return;
+  }
+  /** Several colours to spot at once: the highest value goes first (Rule 7(f)). */
+  function respotAll(sim, list) {
+    for (const i of list.slice().sort((A, B) => val(B) - val(A))) respot(sim, i);
   }
 
-  /** The cue ball can reach both edges of ball t in straight lines (no ball in the way). */
-  function bothEdgesClear(sim, t) {
+  /** Is the straight path of the cue ball's centre to a contact on ball t clear of other balls?
+   *  off: where on t, from -1 (one extreme edge) through 0 (full ball) to 1 (the other edge).
+   *  skip: balls that do not count as obstructions. */
+  function contactClear(sim, t, off, skip) {
+    const cx = sim.x[0], cy = sim.y[0], dx = sim.x[t] - cx, dy = sim.y[t] - cy, d = Math.hypot(dx, dy);
+    if (d <= 2 * R + 1e-6) return true;
+    const lat = off * 2 * R * 0.999, phi = Math.asin(Math.max(-1, Math.min(1, lat / d)));
+    const len = d * Math.cos(phi) - Math.sqrt(Math.max(0, 4 * R * R - lat * lat)), a = Math.atan2(dy, dx) + phi;
+    return pathClear(sim, cx, cy, cx + Math.cos(a) * len, cy + Math.sin(a) * len, [0, t].concat(skip || []), 2 * R - 2e-4);
+  }
+  const OFFS = [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1];
+  /** Rule 14(c): a clear straight path to any part of ball t. */
+  function anyPartClear(sim, t) { return OFFS.some(o => contactClear(sim, t, o)); }
+  /** Rule 14(d): full-ball contact available on t: its centre for a colour; for a Red, its full
+   *  diameter clear of the colours (other Reds do not count). */
+  function fullBallClear(sim, t) {
+    if (!isRed(t)) return contactClear(sim, t, 0);
+    const reds = []; for (let i = 1; i <= 15; i++) reds.push(i);
+    return OFFS.every(o => contactClear(sim, t, o, reds));
+  }
+
+  /** The cue ball can reach both edges of ball t in straight lines (no ball in the way, other
+   *  than those in skip). */
+  function bothEdgesClear(sim, t, skip) {
     const cx = sim.x[0], cy = sim.y[0], dx = sim.x[t] - cx, dy = sim.y[t] - cy, d = Math.hypot(dx, dy);
     if (d <= 2 * R + 1e-6) return true;
     const base = Math.atan2(dy, dx), off = Math.asin(Math.min(1, 2 * R / d)), len = Math.sqrt(Math.max(0, d * d - 4 * R * R));
     for (const s of [-1, 1]) {
       const a = base + s * off * 0.999, ex = cx + Math.cos(a) * len, ey = cy + Math.sin(a) * len;
-      if (!pathClear(sim, cx, cy, ex, ey, [0, t], 2 * R - 2e-4)) return false;
+      if (!pathClear(sim, cx, cy, ex, ey, [0, t].concat(skip || []), 2 * R - 2e-4)) return false;
     }
     return true;
   }
@@ -91,6 +116,10 @@
       this.scores = [0, 0]; this.player = 0; this.brk = 0; this.high = [0, 0];
       this.phase = 'red'; this.freeBall = false; this.inHand = true; this.over = false; this.winner = -1;
       this.canPutBack = false; this.offender = -1; this.blackRespot = false; this.lastShot = null;
+      // Foul and a Miss (Section 3 Rule 14): the last foul was a miss, so the balls may be put
+      // back; missRun counts misses in a row from the same position with full-ball contact
+      // available; warned: the next such miss loses the frame.
+      this.canReplace = false; this.missRun = 0; this.warned = false;
     }
     redsOn(sim) { let n = 0; for (let i = 1; i <= 15; i++) if (sim.on[i]) n++; return n; }
     lowest(sim) { for (const c of COLOURS) if (sim.on[ID[c]]) return c; return null; }
@@ -114,22 +143,33 @@
       for (const c of COLOURS) if (sim.on[ID[c]]) s += VALUE[c];
       return s;
     }
-    /** Judges a finished shot. rec: the sim's record. Mutates the frame and re-spots on sim. */
-    judge(sim, rec) {
+    /** Judges a finished shot. rec: the sim's record. ctx (the game's, optional): what the
+     *  table was like when the shot was struck, for the touching-ball and miss rules:
+     *  { touchOn, push, pushBall, clear, full, attemptOK, needBefore, replay, declared }.
+     *  Mutates the frame and re-spots on sim. */
+    judge(sim, rec, ctx) {
       const phase = this.phase, fb = this.freeBall, me = this.player, other = 1 - me;
       const first = rec.firstHit, pots = rec.potted.filter(i => i !== 0);
-      let foul = false, fv = 4, reason = '';
+      let foul = false, fv = 4, reason = '', hitFail = false;
       const bump = (v, why) => { foul = true; if (v > fv || !reason) { fv = Math.max(fv, v); reason = reason || why; } };
-      const onVal = phase === 'red' ? 1 : phase === 'colour' ? (first > 0 && isColour(first) ? val(first) : 4) : VALUE[phase];
+      // the ball on's value; after a Red the colour is nominated by the first colour hit, or by
+      // the colour the cue was aimed at; with none, a foul is 7 (Rule 11(d)(vi))
+      const declared = ctx && ctx.declared >= 0 && isColour(ctx.declared) ? ctx.declared : -1;
+      const onVal = phase === 'red' ? 1 : phase === 'colour' ? (first > 0 && isColour(first) ? val(first) : declared >= 0 ? val(declared) : 7) : VALUE[phase];
       let nominee = -1; // the colour nominated (after a red) or the free ball
-      if (first < 0) bump(onVal, 'Missed every ball');
-      else if (phase === 'red') {
-        if (isRed(first)) { /* legal */ } else if (fb) nominee = first; else bump(Math.max(onVal, val(first)), `Hit the ${NAME[KIND[first]].toLowerCase()} first`);
+      if (first < 0) {
+        // playing away from a touching ball on is not a foul (Rule 8(c))
+        if (!(ctx && ctx.touchOn)) { bump(onVal, 'Missed every ball'); hitFail = true; }
+      } else if (phase === 'red') {
+        if (isRed(first)) { /* legal */ } else if (fb) nominee = first; else { bump(Math.max(onVal, val(first)), `Hit the ${NAME[KIND[first]].toLowerCase()} first`); hitFail = true; }
       } else if (phase === 'colour') {
-        if (isColour(first)) nominee = first; else bump(onVal, 'Hit a red, not a colour');
+        // a Red straight after a Red: playing at Reds in successive strokes, 7 (Rule 11(d)(iii))
+        if (isColour(first)) nominee = first; else { bump(7, 'Hit a red after a red'); hitFail = true; }
       } else if (KIND[first] !== phase) {
-        if (fb) nominee = first; else bump(Math.max(onVal, val(first)), `Hit the ${NAME[KIND[first]].toLowerCase()} first`);
+        if (fb) nominee = first; else { bump(Math.max(onVal, val(first)), `Hit the ${NAME[KIND[first]].toLowerCase()} first`); hitFail = true; }
       }
+      // moving a touching ball with the stroke is a push stroke (Rules 8(b), 11(b)(v))
+      if (ctx && ctx.push) bump(Math.max(onVal, val(ctx.pushBall)), 'Push stroke on a touching ball');
       let pts = 0;
       for (const b of pots) {
         let legal;
@@ -141,18 +181,30 @@
         else if (phase === 'colour') pts = val(nominee);
         else pts = VALUE[phase];
       }
-      if (phase === 'colour' && pots.filter(b => b === nominee).length && pots.length > 1) { /* other balls made it a foul above */ }
       if (rec.cuePotted) bump(onVal, 'In-off');
-      fv = Math.min(7, fv);
-      const res = { foul, foulPts: foul ? fv : 0, reason, pts: foul ? 0 : pts, potted: pots.slice(), player: me, phase, frameOver: false };
 
-      // re-spots: colours go back unless legally potted in the final sequence
+      // re-spots: colours go back unless legally potted in the final sequence; the highest
+      // value first (Rule 7(f))
+      const back = [];
       for (const b of pots) {
         if (!isColour(b)) continue;
         const legalFinal = !foul && phase !== 'red' && phase !== 'colour' && (KIND[b] === phase && b !== nominee);
-        if (!legalFinal) respot(sim, b);
+        if (!legalFinal) back.push(b);
       }
-      this.freeBall = false; this.canPutBack = false;
+      respotAll(sim, back);
+      // a free ball must not leave the opponent snookered behind it after a non-scoring stroke,
+      // unless only two object balls remain (Rule 12(b)(ii), as updated in 2022)
+      if (fb && nominee >= 0 && !foul && pts === 0 && !rec.cuePotted && this.objectBalls(sim) > 2) {
+        const f = Object.assign(Object.create(Frame.prototype), { phase: this.redsOn(sim) > 0 ? 'red' : phase, freeBall: false });
+        const tg = f.targets(sim);
+        if (tg.length && !tg.some(t => bothEdgesClear(sim, t, tg)) && tg.some(t => bothEdgesClear(sim, t, tg.concat([nominee])))) {
+          bump(Math.max(4, onVal), 'Snookered the opponent behind the free ball');
+        }
+      }
+      fv = Math.min(7, fv);
+      const res = { foul, foulPts: foul ? fv : 0, reason, pts: foul ? 0 : pts, potted: pots.slice(), player: me, phase, frameOver: false };
+
+      this.freeBall = false; this.canPutBack = false; this.canReplace = false;
       if (foul) {
         if (!this.solo) this.scores[other] += fv;
         this.high[me] = Math.max(this.high[me], this.brk); this.brk = 0;
@@ -163,11 +215,29 @@
         }
         if (phase === 'black' && this.blackRespot) { this.over = true; this.winner = other; res.frameOver = true; return res; }
         this.startPhase(sim);
-        if (!this.solo) { this.offender = me; this.player = other; this.canPutBack = true; }
-        if (!this.inHand && !this.solo) this.freeBall = this.snookered(sim);
+        // Foul and a Miss (Rule 14): failing to hit a ball on first is a miss, unless a player
+        // needed snookers before or after the stroke, or (snookered) it was a fair attempt; a
+        // repeat from the original position with full-ball contact available is a miss whatever
+        // the scores, and after a Warning a further one loses the frame
+        let miss = false;
+        if (!this.solo && ctx && hitFail) {
+          const needAfter = Math.abs(this.scores[0] - this.scores[1]) > this.pointsLeft(sim);
+          if (ctx.replay && this.missRun > 0) miss = true;
+          else if (ctx.needBefore || needAfter) miss = false;
+          else if (ctx.clear) miss = true;
+          else miss = !ctx.attemptOK;
+        }
+        if (miss && ctx.full) {
+          this.missRun = (ctx.replay ? this.missRun : 0) + 1;
+          if (this.warned && ctx.replay) { this.over = true; this.winner = other; res.miss = true; res.threeMiss = true; res.frameOver = true; return res; }
+        } else { this.missRun = 0; this.warned = false; }
+        res.miss = miss;
+        if (!this.solo) { this.offender = me; this.player = other; this.canPutBack = true; this.canReplace = miss; }
+        if (!this.solo) this.freeBall = this.snookered(sim);
         res.freeBall = this.freeBall;
         return res;
       }
+      this.missRun = 0; this.warned = false;
       this.inHand = false;
       if (pts > 0) {
         this.scores[me] += pts; this.brk += pts;
@@ -196,15 +266,41 @@
       this.player = window.LP.drawLot ? window.LP.drawLot() : 0;
       return false;
     }
-    /** After a foul: is the incoming player unable to hit both edges of any ball on? */
+    /** After a foul: is the incoming player unable to hit both edges of any ball on (Section 2
+     *  Rule 17)? In hand, only if so from every place in the D (17(a)). */
     snookered(sim) {
       const t = this.targets(sim);
       if (!t.length) return false;
-      return !t.some(i => bothEdgesClear(sim, i));
+      // only balls not on can snooker: the balls on never block each other
+      if (!this.inHand) return !t.some(i => bothEdgesClear(sim, i, t));
+      const x0 = sim.x[0], y0 = sim.y[0], on0 = sim.on[0];
+      let blocked = true;
+      for (let k = 0; k < 36 && blocked; k++) {
+        const ang = Math.PI / 2 + Math.PI * (k % 12 + 0.5) / 12, rr = D_R * [0.97, 0.6, 0.25][Math.floor(k / 12)];
+        const px = BAULK_X + Math.cos(ang) * rr, py = Math.sin(ang) * rr;
+        if (!sim.free(px, py, 0)) continue;
+        sim.x[0] = px; sim.y[0] = py; sim.on[0] = 1;
+        if (t.some(i => bothEdgesClear(sim, i, t))) blocked = false;
+      }
+      sim.x[0] = x0; sim.y[0] = y0; sim.on[0] = on0;
+      return blocked;
     }
-    /** The non-offender asked the offender to play again. */
+    objectBalls(sim) { let n = 0; for (let i = 1; i < N; i++) if (sim.on[i]) n++; return n; }
+    /** The non-offender plays from where the balls lie: a Foul and a Miss sequence ends. */
+    playOn() { this.canPutBack = false; this.canReplace = false; this.missRun = 0; this.warned = false; }
+    /** The non-offender asked the offender to play again from the position left (Rule 10(h));
+     *  a Foul and a Miss sequence ends (14(d)(iii)) and a free ball is void (12(f)). */
     putBack() {
-      this.player = this.offender; this.freeBall = false; this.canPutBack = false;
+      this.player = this.offender; this.freeBall = false; this.canPutBack = false; this.canReplace = false;
+      this.missRun = 0; this.warned = false;
+    }
+    /** After a Foul and a Miss, the non-offender asked for the balls back (Rule 14(b)): the game
+     *  puts every ball where it was; the offender plays again with the ball on as it was before
+     *  (before: { phase, inHand }), no free ball, and after a second miss in a row is Warned. */
+    replace(before) {
+      this.player = this.offender; this.freeBall = false; this.canPutBack = false; this.canReplace = false;
+      this.phase = before.phase; this.inHand = before.inHand; this.brk = 0;
+      if (this.missRun >= 2) this.warned = true;
     }
   }
 
@@ -345,7 +441,7 @@
       }
       const tg = f.targets(sim);
       const opp = bestChance(sim, tg, table, oppSigma, f.phase === 'colour').best;
-      const snookered = tg.length && !tg.some(i => bothEdgesClear(sim, i));
+      const snookered = tg.length && !tg.some(i => bothEdgesClear(sim, i, tg));
       return { s: -0.15 - 0.9 * opp + (snookered ? 0.35 : 0), pot: false, opp };
     };
     const simulate = (ang, V0, a, b, firstOnly) => {
@@ -474,6 +570,7 @@
 
   window.LP = Object.assign(window.LP, {
     N, KIND, VALUE, ID, SPOT, COLOURS, NAME, BAULK_X, D_R, val, isRed, isColour,
-    inD, clampD, rack, respot, Frame, setupLevel, plan, wantsToPlay, LEVELS, LEVEL_NAME, bestChance, pathClear, bothEdgesClear,
+    inD, clampD, rack, respot, respotAll, Frame, setupLevel, plan, wantsToPlay, LEVELS, LEVEL_NAME, bestChance, pathClear, bothEdgesClear,
+    anyPartClear, fullBallClear,
   });
 })();
