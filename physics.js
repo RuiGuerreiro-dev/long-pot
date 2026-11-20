@@ -201,6 +201,13 @@
       return [0, lim];
     }
 
+    /** How far side (a, in ball radii, right positive) squirts the cue ball off the cue's line,
+     *  radians: right side sends it left. */
+    squirt(a) {
+      const m = SPEC.M, c = Math.sqrt(Math.max(0, 1 - a * a));
+      return Math.atan((2.5 * a * c) / (1 + m / this.P.cue_end_mass + 2.5 * c * c));
+    }
+
     /** The cue strikes ball 0. ang: the cue's direction; V0: cue speed; a: tip offset to the right
      *  of centre, b: above centre, both in ball radii, in the cue's own frame. The tip is first
      *  brought within reach (reachTip), and the cue raised as cueElevation needs: a raised cue
@@ -214,9 +221,7 @@
       const r2 = a * a + b * b;
       const J = (1 + P.tip_restitution) * V0 / (1 / M + 1 / m + (5 / (2 * m)) * r2);
       const v = J / m;
-      const c = Math.sqrt(Math.max(0, 1 - a * a));
-      const squirt = Math.atan((2.5 * a * c) / (1 + m / P.cue_end_mass + 2.5 * c * c)); // right side sends it left
-      const dir = ang + squirt;
+      const dir = ang + this.squirt(a);
       let vx = v * ce * Math.cos(dir), vy = v * ce * Math.sin(dir);
       const k = 5 * J / (2 * m * R); // spin per radius of offset
       const cA = Math.cos(ang), sA = Math.sin(ang);

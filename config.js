@@ -52,20 +52,34 @@ window.CONFIG = {
   touch_pull_min: { value: 0.05, min: 0, max: 0.3, step: 0.01 },     // phone: the least pull on the cue that strikes; less is let go
   touch_lift_drag: { value: 0.12, min: 0.02, max: 0.5, step: 0.01 }, // phone: degrees the aim view rises per pixel swiped down on the table
   touch_lift_max: { value: 20, min: 0, max: 45, step: 1 },           // phone: the highest the swipe raises the aim view, degrees
+  lift_aim_fine: { value: 0.35, min: 0.1, max: 1, step: 0.05 },      // phone: the aim's swipe speed with the view raised all the way (1: as low down)
+  walk_speed: { value: 1.2, min: 0.3, max: 4, step: 0.1 },           // walking round the table, m/s
 
   // ---- Camera ----
   cam_dist: { value: 0.95, min: 0.3, max: 3, step: 0.05 },           // aim camera distance behind the cue ball, m
   cam_pitch: { value: 13, min: 2, max: 80, step: 1 },                // aim camera angle above the cloth, degrees
   cam_follow: { value: 9, min: 1, max: 30, step: 0.5 },              // how quickly the camera eases to its target, 1/s
+  aim_pitch_max: { value: 40, min: 15, max: 80, step: 1 },           // the highest the aim view can be raised (orbit and swipe), degrees: play is never from above
   light_intensity: { value: 2.2, min: 0.2, max: 6, step: 0.05 },      // the canopy lights
 
-  // ---- Assist at the lower difficulties: a bolder aim line, and the cue ball's path and where it
-  // stops at the power applied (played out with the same physics) ----
+  // ---- Aim guide (every mode that shows one) ----
+  guide_line_width: { value: 3, min: 1.5, max: 8, step: 0.5 },        // the aim line's width, mm
+  guide_obj_len_ghost: { value: 0.35, min: 0.1, max: 1, step: 0.05 }, // the object ball's line, ghost-ball guide, m
+  guide_obj_len_full: { value: 0.7, min: 0.2, max: 1.5, step: 0.05 }, // the object ball's line, full guide, m
+  cone_from: { value: 30, min: 0, max: 80, step: 1 },                 // cut angle where the object ball's line starts to open into a cone, degrees
+  cone_to: { value: 75, min: 10, max: 89, step: 1 },                  // cut angle where the cone is widest, degrees
+  cone_max: { value: 9, min: 0, max: 25, step: 0.5 },                 // the cone's widest half-angle, degrees
+  guide_power: { value: 0.4, min: 0.05, max: 1, step: 0.05 },         // the power the guide plays the line at before you pull (spin's throw and swerve change with pace)
+  ui_pop_time: { value: 0.2, min: 0, max: 0.6, step: 0.02 },          // how long a panel takes to fade and grow in, s
+
+  // ---- Assist at the lower difficulties: a bolder aim line, and the start of the cue ball's path
+  // after contact at the power applied (played out with the same physics) ----
   assist_training_levels: { value: 2, min: 0, max: 8, step: 1 },     // training levels 1..N get it (3 and 4 teach cue-ball control)
   assist_ai_levels: { value: 2, min: 0, max: 4, step: 1 },           // computer difficulties that get it, from the easiest: 2 = Beginner, Amateur
   assist_line_width: { value: 5, min: 2, max: 12, step: 0.5 },        // aim line width with the assist, mm (2.2 without)
   assist_line_opacity: { value: 0.9, min: 0.3, max: 1, step: 0.05 },
   assist_path_time: { value: 12, min: 2, max: 30, step: 1 },          // longest the path plays the shot out, s
+  assist_path_len: { value: 0.3, min: 0.05, max: 2, step: 0.05 },     // how much of the cue ball's path after contact the assist shows, m
 
   // ---- Computer opponent (one row per difficulty: Beginner, Amateur, Pro, Champion) ----
   ai_beginner_aim_error: { value: 0.9, min: 0, max: 3, step: 0.01 },  // aim error, degrees (1 sigma)

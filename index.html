@@ -47,13 +47,15 @@ const CONTROLS = TOUCH ? [
   'Swipe down on the table to look from a little higher, up to come back down.',
   'Only the cue on the right strikes: pull it down, then let go. Further is harder.',
   'Tap or drag on the cue-ball diagram: where the tip hits.',
-  'Two fingers: walk round the table. Pinch: zoom. Top view: the button.',
+  'Two fingers: turn round the table. Pinch: zoom. Top view: for reading the table, not for playing.',
+  'The walk button: the left finger looks round, the right finger walks.',
   'Menu: pause. The back gesture pauses too.',
 ] : [
   'Drag sideways to aim (Shift: fine). The arrow keys aim too.',
   'Hold the button, pull the mouse down, push it up to strike. Or hold Space and let go.',
   'W A S D, or click the cue-ball diagram: where the tip hits. C: back to centre.',
-  'Right-drag: walk round the table. Wheel: zoom. V: overhead view.',
+  'Right-drag: turn round the table. Wheel: zoom. V: top view, for reading the table, not for playing.',
+  'F: walk round the table (drag to look, W A S D to walk); F again to come back.',
   'P: pause. M: mute. H: show these controls in play.',
 ];
 const clock = window.GAME_CLOCK || { now: () => performance.now() / 1000 }; // a check may inject one
@@ -156,6 +158,7 @@ canvas.addEventListener('pointerdown', e => {
   const [lx, ly] = toLogical(e);
   touches.set(e.pointerId, [lx, ly]);
   try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* fine */ }
+  if (scene === 'play' && cam.mode === 'walk' && !hudAt(lx, ly)) { walkDown(e, lx, ly); return; }
   if (touches.size >= 2) { // a second finger: the camera, never the cue
     if (ptr.mode === 'stroke' && !ptr.struck && state) { state.pull = 0; state.power = 0; }
     if (ptr.mode && ptr.mode.startsWith('hud:') && ptr.hud.cancel) ptr.hud.cancel();
@@ -168,17 +171,36 @@ canvas.addEventListener('pointerdown', e => {
   for (let i = hudHits.length - 1; i >= 0; i--) {
     const h = hudHits[i];
     if (lx >= h.x - pad && lx <= h.x + h.w + pad && ly >= h.y - pad && ly <= h.y + h.h + pad) {
-      h.fn(lx, ly); if (h.drag) ptr.mode = 'hud:' + i; else ptr.mode = 'none';
+      h.fn(lx, ly); if (h.drag) ptr.mode = 'hud:' + i; else { ptr.mode = 'none'; pressFx = { x: h.x, y: h.y, w: h.w, h: h.h, t: clock.now() }; }
       ptr.hud = h; return;
     }
   }
   if (scene !== 'play' || !state.human) { ptr.mode = null; return; }
   if (state.phase === 'place') { ptr.mode = 'place'; placeCueAt(lx, ly); }
-  else if (state.phase === 'aim') { ptr.mode = 'undecided'; ptr.pull = 0; ptr.maxPull = 0; ptr.struck = false; }
+  else if (state.phase === 'aim' && cam.mode === 'aim') { ptr.mode = 'undecided'; ptr.pull = 0; ptr.maxPull = 0; ptr.struck = false; }
+  else ptr.mode = null; // the top view is for reading the table: no aiming from it
 });
+/** Is there a HUD control under this point? */
+function hudAt(lx, ly) {
+  const pad = TOUCH ? 12 : 0;
+  return hudHits.some(h => lx >= h.x - pad && lx <= h.x + h.w + pad && ly >= h.y - pad && ly <= h.y + h.h + pad);
+}
+/** Walking: a finger on the left half looks round, one on the right half walks (a stick from
+ *  where it lands); the mouse drags to look. */
+function walkDown(e, lx, ly) {
+  const id = e.pointerId;
+  if (e.pointerType !== 'touch' || lx < W / 2) { if (walkIn.look == null) { walkIn.look = id; walkIn.lx = lx; walkIn.ly = ly; } }
+  else if (walkIn.move == null) { walkIn.move = id; walkIn.ox = lx; walkIn.oy = ly; walkIn.jx = walkIn.jy = 0; }
+}
+const WALK_STICK = 70; // logical pixels from where the walking finger lands to full speed
 canvas.addEventListener('pointermove', e => {
   const [lx, ly] = toLogical(e);
   if (touches.has(e.pointerId)) touches.set(e.pointerId, [lx, ly]);
+  if (e.pointerId === walkIn.look) { walkLook(lx - walkIn.lx, ly - walkIn.ly); walkIn.lx = lx; walkIn.ly = ly; return; }
+  if (e.pointerId === walkIn.move) {
+    walkIn.jx = Math.max(-1, Math.min(1, (lx - walkIn.ox) / WALK_STICK)); walkIn.jy = Math.max(-1, Math.min(1, (ly - walkIn.oy) / WALK_STICK));
+    return;
+  }
   if (ptr.mode === 'multi' || ptr.mode === 'multi-end') {
     if (ptr.mode === 'multi' && touches.size >= 2) {
       const m = twoFingers();
@@ -202,14 +224,14 @@ canvas.addEventListener('pointermove', e => {
       // swipe on the table raises or lowers the view instead
       if (TOUCH) ptr.mode = Math.abs(ptr.ax) >= Math.abs(ptr.ay) ? 'aim' : 'lift';
       else ptr.mode = Math.abs(ptr.ax) >= Math.abs(ptr.ay) || ptr.ay < 0 ? 'aim' : 'stroke';
-      if (ptr.mode === 'aim') turnAim(-ptr.ax * tune.aim_drag * Math.PI / 180 * (ptr.shift ? tune.aim_fine : 1));
+      if (ptr.mode === 'aim') turnAim(-ptr.ax * tune.aim_drag * Math.PI / 180 * (ptr.shift ? tune.aim_fine : 1) * (TOUCH ? liftAimScale() : 1));
       else if (ptr.mode === 'lift') liftView(ptr.ay);
       else { ptr.pull = ptr.ay; ptr.maxPull = ptr.pull; }
     }
     return;
   }
   if (ptr.mode === 'lift') { liftView(dy); return; }
-  if (ptr.mode === 'aim') turnAim(-dx * tune.aim_drag * Math.PI / 180 * (ptr.shift ? tune.aim_fine : 1));
+  if (ptr.mode === 'aim') turnAim(-dx * tune.aim_drag * Math.PI / 180 * (ptr.shift ? tune.aim_fine : 1) * (TOUCH ? liftAimScale() : 1)); // finer with the view raised
   if (ptr.mode === 'stroke' && !ptr.struck) {
     ptr.pull = Math.max(-20, Math.min(tune.stroke_pull, ptr.pull + dy));
     if (ptr.pull > ptr.maxPull) ptr.maxPull = ptr.pull;
@@ -220,6 +242,8 @@ canvas.addEventListener('pointermove', e => {
 });
 function endPointer(e) {
   touches.delete(e.pointerId);
+  if (e.pointerId === walkIn.look) { walkIn.look = null; return; }
+  if (e.pointerId === walkIn.move) { walkIn.move = null; walkIn.jx = walkIn.jy = 0; return; }
   if (ptr.mode === 'multi' || ptr.mode === 'multi-end') { ptr.mode = touches.size ? 'multi-end' : null; return; } // the last finger up ends it
   if (ptr.mode === 'stroke' && !ptr.struck && state && state.phase === 'aim') { state.pull = 0; state.power = 0; }
   if (ptr.mode === 'orbit') cameraOrbitEnd();
@@ -254,6 +278,7 @@ canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('wheel', e => { e.preventDefault(); cameraZoom(e.deltaY); }, { passive: false });
 let hover = [0, 0];
+let pressFx = null; // the last button pressed: a short flash over it (drawFrame)
 
 // ---- Audio: started on first input, mute on M --------------------------------------------
 let audio = null, muted = false;
@@ -550,26 +575,36 @@ const cue = new THREE.Group();
 })();
 
 // Aim guides: flat chalk ribbons on the cloth and a ghost ball.
-const guideMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false });
-const guideMat2 = new THREE.MeshBasicMaterial({ color: 0xbfd8ff, transparent: true, opacity: 0.45, depthWrite: false });
+const guideMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide });
+const guideMat2 = new THREE.MeshBasicMaterial({ color: 0xbfd8ff, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide });
 const ribbons = [0, 1, 2, 3].map(i => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), i === 0 ? guideMat : guideMat2); m.rotation.x = -Math.PI / 2; m.visible = false; world.add(m); return m; });
 const ghost = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false }));
 ghost.visible = false; world.add(ghost);
 const ghostRing = new THREE.Mesh(new THREE.RingGeometry(R * 0.92, R, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide }));
 ghostRing.rotation.x = -Math.PI / 2; ghostRing.visible = false; world.add(ghostRing);
-// The assist's cue-ball path: a flat strip on the cloth along the played-out path, and a ghost
-// cue ball where it comes to rest.
+// Strips on the cloth along a polyline: the aim line when side on a raised cue curves it, and
+// the assist's first stretch of the cue ball's path after contact.
+const aimStrip = new THREE.Mesh(new THREE.BufferGeometry(), guideMat);
+aimStrip.visible = false; aimStrip.frustumCulled = false; world.add(aimStrip);
 const pathMat = new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
 const pathMesh = new THREE.Mesh(new THREE.BufferGeometry(), pathMat);
 pathMesh.visible = false; pathMesh.frustumCulled = false; world.add(pathMesh);
-const restGhost = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.42, depthWrite: false }));
-restGhost.visible = false; world.add(restGhost);
-const restRing = new THREE.Mesh(new THREE.RingGeometry(R * 0.86, R * 1.06, 40), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide }));
-restRing.rotation.x = -Math.PI / 2; restRing.visible = false; world.add(restRing);
-/** Rebuilds the path strip through pts ([x, y] on the cloth), width metres wide. */
-function setPath(pts, width) {
+// The object ball's line opens into a cone on a hard cut: a flat wedge from the ball's edge.
+const coneMesh = new THREE.Mesh(new THREE.BufferGeometry(), guideMat2);
+coneMesh.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
+coneMesh.visible = false; coneMesh.frustumCulled = false; world.add(coneMesh);
+/** Points a wedge from (ax, ay) along ang, len long, opening half each side (radians). */
+function setCone(ax, ay, ang, len, half) {
+  const at = coneMesh.geometry.attributes.position, a = V3(ax, ay, 0.0012);
+  const l = V3(ax + Math.cos(ang + half) * len, ay + Math.sin(ang + half) * len, 0.0012);
+  const r = V3(ax + Math.cos(ang - half) * len, ay + Math.sin(ang - half) * len, 0.0012);
+  at.array.set([a.x, a.y, a.z, r.x, r.y, r.z, l.x, l.y, l.z]); at.needsUpdate = true;
+  coneMesh.geometry.computeBoundingSphere(); coneMesh.visible = true;
+}
+/** Rebuilds a strip mesh through pts ([x, y] on the cloth), width metres wide. */
+function setStrip(mesh, pts, width) {
   const n = pts.length;
-  if (n < 2) { pathMesh.visible = false; return; }
+  if (n < 2) { mesh.visible = false; return; }
   const pos = new Float32Array(n * 6), idx = [];
   for (let i = 0; i < n; i++) {
     const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
@@ -581,7 +616,7 @@ function setPath(pts, width) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(idx);
-  pathMesh.geometry.dispose(); pathMesh.geometry = g; pathMesh.visible = true;
+  mesh.geometry.dispose(); mesh.geometry = g; mesh.visible = true;
 }
 const zoneRing = new THREE.Mesh(new THREE.RingGeometry(0.97, 1, 72), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: 0.75, depthWrite: false, side: THREE.DoubleSide }));
 zoneRing.rotation.x = -Math.PI / 2; zoneRing.visible = false; world.add(zoneRing);
@@ -612,13 +647,15 @@ function camWant() {
     if (!n) { sx = sim.x[0]; sy = sim.y[0]; n = 1; }
     return { yaw: state.shotAng, pitch: 0.62, dist: 2.1 * cam.zoom, tx: sx / n * 0.7, ty: sy / n * 0.7, th: 0 };
   }
-  // aim
+  // aim: never higher than aim_pitch_max, so play is always from a player's eye, not from above
   const a = state.aim + cam.yawOff;
-  return { yaw: a, pitch: tune.cam_pitch * Math.PI / 180 + cam.pitchOff + cam.lift, dist: tune.cam_dist * cam.zoom,
+  return { yaw: a, pitch: Math.min(aimPitchMax(), tune.cam_pitch * Math.PI / 180 + cam.pitchOff + cam.lift), dist: tune.cam_dist * cam.zoom,
     tx: sim.x[0] + Math.cos(state.aim) * 0.18, ty: sim.y[0] + Math.sin(state.aim) * 0.18, th: R };
 }
+const aimPitchMax = () => tune.aim_pitch_max * Math.PI / 180;
 function angLerp(a, b, k) { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * k; }
 function updateCamera(dt, snap) {
+  if (cam.mode === 'walk' && cam.walk && scene !== 'title' && scene !== 'levels') { walkCamera(); return; }
   const w = camWant(), k = snap ? 1 : 1 - Math.exp(-tune.cam_follow * dt);
   cam.yaw = angLerp(cam.yaw, w.yaw, k); cam.pitch += (w.pitch - cam.pitch) * k; cam.dist += (w.dist - cam.dist) * k;
   cam.tx += (w.tx - cam.tx) * k; cam.ty += (w.ty - cam.ty) * k; cam.th += (w.th - cam.th) * k;
@@ -636,7 +673,7 @@ function cameraOrbitStart() {
 function cameraOrbit(dx, dy) {
   if (scene !== 'play') return;
   if (cam.free) { cam.free.yaw -= dx * 0.006; cam.free.pitch = Math.max(0.05, Math.min(1.5, cam.free.pitch + dy * 0.004)); }
-  else { cam.yawOff -= dx * 0.006; cam.pitchOff = Math.max(-0.15, Math.min(1.2, cam.pitchOff + dy * 0.004)); }
+  else { cam.yawOff -= dx * 0.006; cam.pitchOff = Math.max(-0.15, Math.min(aimPitchMax() - tune.cam_pitch * Math.PI / 180 - cam.lift, cam.pitchOff + dy * 0.004)); }
 }
 function cameraOrbitEnd() {}
 function cameraZoom(dy) {
@@ -645,16 +682,68 @@ function cameraZoom(dy) {
   else if (cam.mode === 'top') cam.topZoom = Math.max(0.35, Math.min(1.6, cam.topZoom * f));
   else cam.zoom = Math.max(0.35, Math.min(4, cam.zoom * f));
 }
-function camForTurn() { cam.free = null; cam.yawOff = 0; cam.pitchOff = 0; cam.mode = cam.preferTop ? 'top' : 'aim'; }
+/** Every turn is played from the aim view: the top view and walking are for reading the table. */
+function camForTurn() { cam.free = null; cam.yawOff = 0; cam.pitchOff = 0; cam.mode = 'aim'; }
 /** A phone's up or down swipe on the table: down (dy > 0) raises the aim view a little, up lowers it. */
 function liftView(dy) {
-  cam.lift = Math.max(0, Math.min(tune.touch_lift_max * Math.PI / 180, cam.lift + dy * tune.touch_lift_drag * Math.PI / 180));
+  const max = Math.min(tune.touch_lift_max * Math.PI / 180, aimPitchMax() - tune.cam_pitch * Math.PI / 180 - Math.max(0, cam.pitchOff));
+  cam.lift = Math.max(0, Math.min(max, cam.lift + dy * tune.touch_lift_drag * Math.PI / 180));
+}
+/** How fast a sideways swipe turns the aim: slower the higher the view is raised (lift_aim_fine
+ *  at the top of the swipe's range). */
+function liftAimScale() {
+  const top = tune.touch_lift_max * Math.PI / 180;
+  return top > 0 ? 1 - (1 - tune.lift_aim_fine) * Math.min(1, cam.lift / top) : 1;
+}
+
+// Walking round the table: a free eye at a fixed height that looks round and walks, anywhere
+// round or over the table. Phone: the left finger looks, the right finger walks (a stick from
+// where it lands). Mouse: drag to look, W A S D or the arrows to walk.
+const walkIn = { look: null, move: null, lx: 0, ly: 0, ox: 0, oy: 0, jx: 0, jy: 0 };
+function toggleWalk() {
+  if (cam.mode === 'walk') { endWalk(); return; }
+  const p = camera.position, dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  cam.walk = { x: p.x, y: -p.z, h: Math.max(0.12, Math.min(1.6, p.y)),
+    yaw: Math.atan2(-dir.z, dir.x), pitch: Math.max(-0.6, Math.min(1.45, -Math.asin(Math.max(-1, Math.min(1, dir.y))))) };
+  cam.free = null; cam.mode = 'walk'; state.help = false; dropStroke();
+}
+function endWalk() {
+  walkIn.look = walkIn.move = null; walkIn.jx = walkIn.jy = 0;
+  if (state.phase === 'place') cam.mode = 'top';
+  else if (state.phase === 'roll') cam.mode = 'watch';
+  else camForTurn();
+}
+/** One game step of walking: the right finger's stick, or W A S D and the arrows. */
+function walkMove(dt) {
+  const w = cam.walk; if (!w) return;
+  const sp = tune.walk_speed * dt;
+  let f = -walkIn.jy, s = walkIn.jx;
+  if (!TOUCH) { // the keyboard
+    if (down.has('KeyW') || down.has('ArrowUp')) f += 1; if (down.has('KeyS') || down.has('ArrowDown')) f -= 1;
+    if (down.has('KeyD') || down.has('ArrowRight')) s += 1; if (down.has('KeyA') || down.has('ArrowLeft')) s -= 1;
+  }
+  const m = Math.hypot(f, s); if (m > 1) { f /= m; s /= m; }
+  w.x += (Math.cos(w.yaw) * f + Math.sin(w.yaw) * s) * sp;
+  w.y += (Math.sin(w.yaw) * f - Math.cos(w.yaw) * s) * sp;
+  w.x = Math.max(-table.HL - 1.3, Math.min(table.HL + 1.3, w.x)); w.y = Math.max(-table.HW - 1.3, Math.min(table.HW + 1.3, w.y));
+}
+function walkCamera() {
+  const w = cam.walk, cp = Math.cos(w.pitch), dx = Math.cos(w.yaw) * cp, dy = Math.sin(w.yaw) * cp, dz = -Math.sin(w.pitch);
+  camera.position.copy(V3(w.x, w.y, w.h)); camera.up.set(0, 1, 0);
+  camera.lookAt(V3(w.x + dx, w.y + dy, w.h + dz));
+  // keep the orbit camera's numbers on the eye, so leaving the walk eases from here
+  cam.yaw = w.yaw; cam.pitch = w.pitch; cam.dist = 1; cam.tx = w.x + dx; cam.ty = w.y + dy; cam.th = w.h + dz;
+}
+function walkLook(dx, dy) {
+  const w = cam.walk; if (!w) return;
+  w.yaw -= dx * 0.006; w.pitch = Math.max(-0.6, Math.min(1.45, w.pitch + dy * 0.004));
 }
 /** Every new game (a training level, a retry, a frame) starts in the player's view behind the
  *  cue ball: no overhead preference, no orbit, no zoom, no lift carried over. */
 function resetCameraForGame() {
   cam.preferTop = false; cam.free = null; cam.yawOff = 0; cam.pitchOff = 0; cam.lift = 0;
-  cam.zoom = 1; cam.topZoom = 1; cam.mode = 'aim';
+  cam.zoom = 1; cam.topZoom = 1; cam.mode = 'aim'; cam.walk = null;
+  walkIn.look = walkIn.move = null; walkIn.jx = walkIn.jy = 0;
 }
 
 // ---- Scenes: keep only the day-one screens the brief calls for ----------------------------
@@ -674,7 +763,7 @@ function reset() {
   LP.rack(sim); sim.place(0, LP.BAULK_X - 0.08, 0.1);
   for (const q of quats) q.identity();
 }
-function say(s, t = 2.6) { state.msg = s; state.msgT = t; events.push({ msg: s }); }
+function say(s, t = 2.6) { state.msg = s; state.msgT = t; state.msgDur = t; events.push({ msg: s }); }
 function mirror() { // the frame into state, so window.game.state reports it
   if (!frame) return;
   state.scores = frame.scores.slice(); state.brk = frame.brk; state.ballOn = frame.onText(); state.player = frame.player;
@@ -750,6 +839,7 @@ function turnAim(d) { if (state.phase === 'aim' && state.human) state.aim += d; 
 function cueSpeed(power) { return tune.cue_speed_min + (tune.cue_speed_max - tune.cue_speed_min) * Math.pow(Math.max(0, Math.min(1, power)), tune.power_curve); }
 function beginStrike(power) {
   if (state.phase !== 'aim' || power <= 0.004) return;
+  if (state.human) markHintSeen();
   state.phase = 'strike'; state.phaseT = 0; state.strikePower = power; state.strikeFrom = Math.max(0.02, state.pull);
   state.pending = { ang: state.aim, V0: cueSpeed(power), a: state.tipA, b: state.tipB };
 }
@@ -791,7 +881,7 @@ function strikeNow(s) {
   sim.strike(s.ang, s.V0, s.a, s.b);
   watchShot();
   state.shotAng = s.ang; state.phase = 'roll'; state.phaseT = 0; state.pull = 0; state.power = 0;
-  if (!cam.free && cam.mode !== 'top') cam.mode = 'watch';
+  if (!cam.free && cam.mode !== 'top' && cam.mode !== 'walk') cam.mode = 'watch';
 }
 function onSimEvent(kind, i, j, speed) {
   if (kind === 'cue') sfx('cue', speed / 3);
@@ -812,7 +902,7 @@ function startAITurn() {
   aiJob = { live: sim, frame, table, tune, level: state.aiLevel, h: STEP / tune.physics_substeps, rng };
   aiJob.gen = LP.plan(aiJob);
   if (!frame.inHand) { pointAtNearest(); }
-  cam.free = null; cam.mode = frame.inHand ? 'top' : 'aim'; cam.yawOff = 0; cam.pitchOff = 0.12;
+  if (cam.mode !== 'walk') { cam.free = null; cam.mode = frame.inHand ? 'top' : 'aim'; } cam.yawOff = 0; cam.pitchOff = 0.12;
 }
 
 // After a shot comes to rest: the rules, the level's goal, the message, then the next turn.
@@ -965,6 +1055,8 @@ function layoutKey() {
   let lay = 0; for (let i = 0; i < LP.N; i++) if (sim.on[i]) lay += sim.x[i] * (i + 1) + sim.y[i] * (i + 31);
   return lay.toFixed(6);
 }
+/** The assist: the first stretch (assist_path_len) of the cue ball's path after its first
+ *  contact, at the power applied. */
 function predictCuePath(power) {
   const key = `${state.aim.toFixed(5)}|${power.toFixed(3)}|${state.tipA.toFixed(3)}|${state.tipB.toFixed(3)}|${layoutKey()}`;
   if (key === predictKey) return predicted;
@@ -973,54 +1065,110 @@ function predictCuePath(power) {
   p.copyFrom(sim); p.setParams(physParams()); p.onEvent = null;
   p.strike(state.aim, cueSpeed(power), state.tipA, state.tipB);
   const h = STEP / Math.max(1, Math.round(tune.physics_substeps)), steps = Math.ceil(tune.assist_path_time / h);
-  const pts = [[p.x[0], p.y[0]]];
-  let from = -1; // the first contact: the path is drawn on from there, the aim line covers the rest
+  let pts = null, run = 0; // from the first contact on
   for (let s = 0; s < steps; s++) {
     p.step(h);
-    const x = p.x[0], y = p.y[0], last = pts[pts.length - 1];
-    if (from < 0 && (p.rec.firstHit >= 0 || p.rec.cushions > 0)) { pts.push([x, y]); from = pts.length - 1; }
-    else if ((x - last[0]) ** 2 + (y - last[1]) ** 2 > 0.008 * 0.008 || !p.on[0]) pts.push([x, y]);
+    const x = p.x[0], y = p.y[0];
+    if (!pts) { if (p.rec.firstHit >= 0 || p.rec.cushions > 0) pts = [[x, y]]; }
+    else {
+      const last = pts[pts.length - 1], d = Math.hypot(x - last[0], y - last[1]);
+      if (d > 0.008 || !p.on[0]) { pts.push([x, y]); run += d; }
+      if (run >= tune.assist_path_len) break;
+    }
     if (!p.on[0] || !p.mov[0]) break; // potted, or at rest
   }
-  predicted = { pts: from > 0 ? pts.slice(from) : pts, potted: !p.on[0], rest: pts[pts.length - 1] };
+  predicted = pts && pts.length > 1 ? { pts } : null;
   return predicted;
 }
+// The guide as the shot will really go, from the game's own physics: the cue ball's line to its
+// first contact (side's squirt on a level cue; a curve when side on a raised cue swerves it), the
+// ghost ball there, and the object ball's line off it with the throw that spin and cut give.
+const guideSim = new LP.Sim(table, LP.N);
+let guideKey = '', guided = null;
+function playGuide(pw) {
+  const g = guideSim;
+  g.copyFrom(sim); g.setParams(physParams()); g.onEvent = null;
+  g.strike(state.aim, cueSpeed(pw), state.tipA, state.tipB);
+  const h = STEP / Math.max(1, Math.round(tune.physics_substeps));
+  const pts = [[g.x[0], g.y[0]]], out = { pts, ball: -1, curved: g.lastElev > 0.017 && Math.abs(g.wx[0] * Math.cos(state.aim) + g.wy[0] * Math.sin(state.aim)) > 0.5 };
+  for (let s = 0, n = Math.ceil(6 / h); s < n; s++) {
+    const bx = g.x[0], by = g.y[0], vx = g.vx[0], vy = g.vy[0];
+    g.step(h);
+    const rec = g.rec;
+    if (rec.firstHit >= 0) {
+      // the contact: along the cue ball's line in this substep, a diameter from the ball it hits
+      const i = rec.firstHit, ox = sim.x[i] - bx, oy = sim.y[i] - by, v = Math.hypot(vx, vy) || 1, dx = vx / v, dy = vy / v;
+      const b = ox * dx + oy * dy, disc = b * b - (ox * ox + oy * oy - 4 * R * R);
+      const t = disc >= 0 ? Math.max(0, b - Math.sqrt(disc)) : 0, gx = bx + dx * t, gy = by + dy * t;
+      pts.push([gx, gy]);
+      let nx = sim.x[i] - gx, ny = sim.y[i] - gy; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+      const dot = dx * nx + dy * ny, tgx = dx - dot * nx, tgy = dy - dot * ny, tl = Math.hypot(tgx, tgy) || 1;
+      Object.assign(out, { ball: i, gx, gy, objDir: rec.firstDir, cut: Math.acos(Math.max(-1, Math.min(1, dot))), tgx: tgx / tl, tgy: tgy / tl, thin: tl });
+      return out;
+    }
+    if (rec.cushions > 0 || !g.on[0]) { // a cushion first: the line to it, and the way it comes off
+      pts.push([g.x[0], g.y[0]]);
+      const v = Math.hypot(g.vx[0], g.vy[0]) || 1;
+      Object.assign(out, { gx: g.x[0], gy: g.y[0], rx: g.vx[0] / v, ry: g.vy[0] / v, cushion: rec.cushions > 0 });
+      return out;
+    }
+    if (!g.mov[0]) return null; // stops short: the caller plays it harder for the line
+    const last = pts[pts.length - 1];
+    if ((g.x[0] - last[0]) ** 2 + (g.y[0] - last[1]) ** 2 > 0.01 * 0.01) pts.push([g.x[0], g.y[0]]);
+  }
+  return null;
+}
+function shotGuide(power) {
+  const pw = power > 0.004 ? power : tune.guide_power;
+  const key = `${state.aim.toFixed(5)}|${pw.toFixed(2)}|${state.tipA.toFixed(3)}|${state.tipB.toFixed(3)}|${layoutKey()}`;
+  if (key === guideKey && guided) return guided;
+  guideKey = key;
+  // the line never tells how far a soft stroke rolls: a stroke that stops short is played harder
+  guided = playGuide(pw) || playGuide(1) || { pts: [[sim.x[0], sim.y[0]]], ball: -1 };
+  return guided;
+}
+const colLine = new THREE.Color(0xffffff), colHard = new THREE.Color(0xff3b30);
 function updateGuides() {
   for (const r of ribbons) r.visible = false; ghost.visible = false; ghostRing.visible = false;
-  pathMesh.visible = false; restGhost.visible = false; restRing.visible = false;
+  pathMesh.visible = false; aimStrip.visible = false; coneMesh.visible = false;
   const g = state.guide;
-  const showing = scene === 'play' && state.phase === 'aim' && state.human || state.phase === 'strike' && state.human;
+  // the guide shows only in the aim view: the top view and walking are for reading the table
+  const showing = scene === 'play' && state.human && (state.phase === 'aim' || state.phase === 'strike') && cam.mode === 'aim' && !cam.free;
   if (!showing || g === 'none') return;
   const assist = assistOn();
-  const w = assist ? tune.assist_line_width / 1000 : 0.0022;
-  guideMat.opacity = assist ? tune.assist_line_opacity : 0.55;
-  guideMat2.opacity = assist ? tune.assist_line_opacity * 0.85 : 0.45;
+  const w = (assist ? tune.assist_line_width : tune.guide_line_width) / 1000, op = assist ? tune.assist_line_opacity : 0.6;
+  const power = state.phase === 'strike' ? state.strikePower : state.power;
+  guideMat.color.copy(colLine).lerp(colHard, Math.min(1, power)); // the cue ball's line reddens with the power
+  guideMat.opacity = op; guideMat2.opacity = op * 0.85;
   ghost.material.opacity = assist ? 0.32 : 0.22;
   ghostRing.material.opacity = assist ? 0.95 : 0.7;
-  // the cue ball's own path, as far as the power applied carries it
-  const power = state.phase === 'strike' ? state.strikePower : state.power;
-  const path = assist && power > 0.004 ? predictCuePath(power) : null;
-  if (path) {
-    pathMat.color.setHex(path.potted ? 0xff5a4a : 0xfff3c4); pathMat.opacity = tune.assist_line_opacity;
-    setPath(path.pts, w);
-    if (!path.potted) {
-      restGhost.visible = restRing.visible = true;
-      restGhost.position.copy(V3(path.rest[0], path.rest[1], R)); restRing.position.copy(V3(path.rest[0], path.rest[1], 0.0014));
-    }
+  const q = shotGuide(power), a = q.pts[0], z = q.pts[q.pts.length - 1];
+  const strip = pts => (pts.length > 2 ? setStrip(aimStrip, pts, w) : setRibbon(ribbons[0], pts[0][0], pts[0][1], pts[pts.length - 1][0], pts[pts.length - 1][1], w));
+  if (g === 'short') { // only the line's start
+    const cut = [a]; let run = 0;
+    for (let i = 1; i < q.pts.length && run < 0.4; i++) { const p = q.pts[i], l = cut[cut.length - 1], d = Math.hypot(p[0] - l[0], p[1] - l[1]), k = Math.min(1, (0.4 - run) / d); cut.push([l[0] + (p[0] - l[0]) * k, l[1] + (p[1] - l[1]) * k]); run += d; }
+    if (cut.length > 1) strip(cut);
+    return;
   }
-  const q = guideFor(state.aim);
-  if (g === 'short') { const L = Math.min(q.t, 0.4); setRibbon(ribbons[0], q.cx, q.cy, q.cx + q.dx * L, q.cy + q.dy * L, w); return; }
-  setRibbon(ribbons[0], q.cx + q.dx * R, q.cy + q.dy * R, q.gx, q.gy, w);
+  if (q.curved) setStrip(aimStrip, q.pts, w);
+  else { const d = Math.hypot(z[0] - a[0], z[1] - a[1]) || 1; setRibbon(ribbons[0], a[0] + (z[0] - a[0]) / d * R, a[1] + (z[1] - a[1]) / d * R, z[0], z[1], w); }
+  // the assist: the first stretch of the cue ball's path after contact, at the power applied
+  const path = assist && power > 0.004 ? predictCuePath(power) : null;
+  if (path) { pathMat.color.copy(guideMat.color); pathMat.opacity = op; setStrip(pathMesh, path.pts, w); }
   if (q.ball < 0) {
-    if (g !== 'ghost' && !path) setRibbon(ribbons[1], q.gx, q.gy, q.gx + q.rx * 0.4, q.gy + q.ry * 0.4, w);
+    if (g !== 'ghost' && !path && q.rx !== undefined) setRibbon(ribbons[1], q.gx, q.gy, q.gx + q.rx * 0.4, q.gy + q.ry * 0.4, w);
     return;
   }
   if (g === 'line') return;
   ghost.visible = true; ghost.position.copy(V3(q.gx, q.gy, R));
   ghostRing.visible = true; ghostRing.position.copy(V3(q.gx, q.gy, 0.0012));
-  const objL = g === 'full' ? 0.55 : 0.16;
-  const ox = sim.x[q.ball], oy = sim.y[q.ball];
-  setRibbon(ribbons[1], ox + q.nx * R, oy + q.ny * R, ox + q.nx * (R + objL), oy + q.ny * (R + objL), w);
+  // the object ball's line, as the physics sends it; on a hard cut it opens into a cone
+  const L = g === 'full' ? tune.guide_obj_len_full : tune.guide_obj_len_ghost;
+  const sx = sim.x[q.ball] + Math.cos(q.objDir) * R, sy = sim.y[q.ball] + Math.sin(q.objDir) * R;
+  const k = Math.max(0, Math.min(1, (q.cut * 180 / Math.PI - tune.cone_from) / Math.max(1, tune.cone_to - tune.cone_from)));
+  const half = tune.cone_max * Math.PI / 180 * k * k * (3 - 2 * k);
+  if (half > 0.004) setCone(sx, sy, q.objDir, L, half);
+  else setRibbon(ribbons[1], sx, sy, sx + Math.cos(q.objDir) * L, sy + Math.sin(q.objDir) * L, w);
   if (g === 'full' && q.thin > 0.05 && !path) setRibbon(ribbons[2], q.gx, q.gy, q.gx + q.tgx * 0.28 * q.thin, q.gy + q.tgy * 0.28 * q.thin, w * 0.8);
 }
 
@@ -1166,6 +1314,14 @@ function icon(name, cx, cy, s, c = UI.text) {
     case 'guide': // a dotted aim line to a ghost ball
       ctx.setLineDash([s * 0.18, s * 0.22]); line([-0.8, 0.75], [0.12, -0.12]); ctx.setLineDash([]); ring(0.38, -0.4, 0.34); break;
     case 'help': ring(0, 0, 0.8); dot(0, -0.38, 0.12); line([0, -0.06], [0, 0.42]); break;
+    case 'walk': // two footprints, one ahead of the other
+      for (const [x, y, r] of [[-0.34, 0.28, -0.22], [0.34, -0.3, 0.22]]) {
+        ctx.save(); ctx.translate(...P(x, y)); ctx.rotate(r);
+        ctx.beginPath(); ctx.ellipse(0, 0.06 * s, 0.2 * s, 0.3 * s, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(0, -0.4 * s, 0.14 * s, 0.12 * s, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      break;
     case 'soundOn': case 'soundOff':
       ctx.beginPath(); ctx.moveTo(...P(-0.8, -0.28)); ctx.lineTo(...P(-0.42, -0.28)); ctx.lineTo(...P(-0.02, -0.64)); ctx.lineTo(...P(-0.02, 0.64)); ctx.lineTo(...P(-0.42, 0.28)); ctx.lineTo(...P(-0.8, 0.28)); ctx.closePath(); ctx.fill();
       if (name === 'soundOn') { for (const r of [0.38, 0.7]) { ctx.beginPath(); ctx.arc(...P(-0.02, 0), r * s, -0.8, 0.8); ctx.stroke(); } }
@@ -1187,11 +1343,12 @@ function icon(name, cx, cy, s, c = UI.text) {
 function toolbar(items, right, y) {
   const size = TOUCH ? 56 : 46, w = items.length * size + 8, x = right - w;
   glass(x, y, w, size + 8, (size + 8) / 2);
-  items.forEach(([name, fn, tip], i) => {
+  items.forEach(([name, fn, tip, active], i) => {
     const bx = x + 4 + i * size, by = y + 4, hot = hovering(bx, by, size, size);
+    if (active) { ctx.beginPath(); ctx.arc(bx + size / 2, by + size / 2, size / 2 - 4, 0, Math.PI * 2); ctx.fillStyle = 'rgba(242,201,76,0.22)'; ctx.fill(); }
     if (i) { ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(bx, by + size * 0.25, 1, size * 0.5); }
     if (hot) { ctx.beginPath(); ctx.arc(bx + size / 2, by + size / 2, size / 2 - 4, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fill(); }
-    icon(name, bx + size / 2, by + size / 2, size * 0.25, hot ? '#ffffff' : 'rgba(244,246,245,0.86)');
+    icon(name, bx + size / 2, by + size / 2, size * 0.25, active ? UI.gold : hot ? '#ffffff' : 'rgba(244,246,245,0.86)');
     hudHits.push({ x: bx, y: by, w: size, h: size, fn });
     if (hot && tip) { // the name and its key, under the button
       ctx.font = `600 ${13 * FONT_BOOST}px ${FONT}`;
@@ -1291,7 +1448,7 @@ function drawSpinWidget() {
 }
 // Touch: the cue on the right is pulled down and let go to strike; the wheel on the left turns the aim finely.
 function drawTouchCue() {
-  const x = W - 92, y = 152, w = 66, h = 280, can = state.human && state.phase === 'aim';
+  const x = W - 92, y = 152, w = 66, h = 280, can = state.human && state.phase === 'aim' && cam.mode === 'aim';
   glass(x - 6, y - 36, w + 12, h + 72, 22);
   caps('Pull', x + w / 2, y - 16, 12, UI.dim, 'center');
   const p = state.phase === 'strike' ? 0 : state.power, mx = x + w / 2;
@@ -1313,7 +1470,7 @@ function drawTouchCue() {
     cancel: () => { ptr.slideY = null; state.power = 0; state.pull = 0; } });
 }
 function drawFineWheel() {
-  const x = 18, y = 186, w = 58, h = 250, can = state.human && state.phase === 'aim';
+  const x = 18, y = 186, w = 58, h = 250, can = state.human && state.phase === 'aim' && cam.mode === 'aim';
   glass(x, y, w, h, 22);
   ctx.save(); rrect(x + 9, y + 12, w - 18, h - 24, 12); ctx.clip();
   const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, 'rgba(0,0,0,0.5)'); g.addColorStop(0.5, 'rgba(255,255,255,0.10)'); g.addColorStop(1, 'rgba(0,0,0,0.5)');
@@ -1329,7 +1486,17 @@ function drawFineWheel() {
     fn: (lx, ly) => { if (ptr.wheelY == null) { ptr.wheelY = ly; return; } const d = ly - ptr.wheelY; ptr.wheelY = ly; state.wheel = (state.wheel || 0) + d; turnAim(-d * tune.aim_drag * tune.aim_fine * Math.PI / 180); },
     up: () => { ptr.wheelY = null; }, cancel: () => { ptr.wheelY = null; } });
 }
-function toggleView() { cam.free = null; cam.preferTop = cam.mode !== 'top'; cam.mode = cam.preferTop ? 'top' : (state.phase === 'roll' ? 'watch' : 'aim'); }
+/** V or the button: the top view, for reading the table (no aiming or striking from it), and back. */
+function toggleView() {
+  cam.free = null; walkIn.look = walkIn.move = null; walkIn.jx = walkIn.jy = 0; dropStroke();
+  cam.mode = cam.mode === 'top' ? (state.phase === 'roll' ? 'watch' : 'aim') : 'top';
+}
+/** Leaving the aim view lets go of a stroke being pulled back, so it never fires from elsewhere. */
+function dropStroke() {
+  if (state.phase !== 'aim') return;
+  state.spaceHeld = false; state.keyPower = 0; state.power = 0; state.pull = 0; ptr.slideY = null;
+  if (ptr.mode === 'stroke' || ptr.mode === 'undecided' || (ptr.mode && ptr.mode.startsWith('hud:'))) ptr.mode = 'none';
+}
 function cycleGuide() { const G = ['full', 'ghost', 'line', 'none']; state.guide = G[(G.indexOf(state.guide) + 1) % G.length]; }
 function drawRotate() { // a phone held upright: ask for landscape
   hudHits = [];
@@ -1398,30 +1565,53 @@ function drawMessage() {
   ctx.font = `500 ${size * FONT_BOOST}px ${FONT}`;
   const w = Math.min(maxW, Math.max(...lines.map(l => ctx.measureText(l).width)) + 48), h = 18 + lines.length * lh;
   const x = (W - w) / 2, y = 22;
+  popIn((state.msgDur || 0) - state.msgT, W / 2, y + h / 2);
+  ctx.globalAlpha *= Math.min(1, state.msgT * 2.5);
   glass(x, y, w, h, Math.min(24, h / 2));
   lines.forEach((l, i) => text(l, W / 2, y + 9 + lh / 2 + i * lh, size, UI.text, 'center', FONT, '500'));
-  ctx.globalAlpha = 1;
+  popOut();
+}
+// The aim hint shows until the first shot you ever play (kept in the browser).
+let hintSeen = (() => { try { return localStorage.getItem('long-pot-aim-hint') === '1'; } catch (_) { return false; } })();
+function markHintSeen() { if (hintSeen) return; hintSeen = true; try { localStorage.setItem('long-pot-aim-hint', '1'); } catch (_) { /* private mode */ } }
+/** Walking on a phone: where the two fingers go, and the walking finger's stick. */
+function drawWalkSticks() {
+  if (!TOUCH) return;
+  const r = 54, y = H - 170;
+  const ring = (x, yy, rr, a) => { ctx.beginPath(); ctx.arc(x, yy, rr, 0, Math.PI * 2); ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.lineWidth = 2; ctx.stroke(); };
+  if (walkIn.look == null) { ring(170, y, r, 0.28); caps('Look', 170, y, 12, UI.dim, 'center'); }
+  if (walkIn.move == null) { ring(W - 170, y, r, 0.28); caps('Walk', W - 170, y, 12, UI.dim, 'center'); }
+  else {
+    ring(walkIn.ox, walkIn.oy, WALK_STICK, 0.4);
+    ctx.beginPath(); ctx.arc(walkIn.ox + walkIn.jx * WALK_STICK, walkIn.oy + walkIn.jy * WALK_STICK, 22, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(242,201,76,0.55)'; ctx.fill();
+  }
 }
 function drawPlayHUD() {
+  const walking = cam.mode === 'walk';
   if (state.mode === 'frame') drawScoreboard(); else drawTrainingCard();
-  drawSpinWidget();
-  if (TOUCH) { drawTouchCue(); drawFineWheel(); }
+  if (!walking) { drawSpinWidget(); if (TOUCH) { drawTouchCue(); drawFineWheel(); } }
   const tools = [['menu', () => { scene = 'pause'; }, `Menu  ${keyHint('P')}`],
-    cam.mode === 'top' ? ['aim', toggleView, `Aim view  ${keyHint('V')}`] : ['top', toggleView, `Top view  ${keyHint('V')}`]];
+    cam.mode === 'top' ? ['aim', toggleView, `Aim view  ${keyHint('V')}`] : ['top', toggleView, `Top view: read the table  ${keyHint('V')}`],
+    ['walk', toggleWalk, walking ? `Stop walking  ${keyHint('F')}` : `Walk round the table  ${keyHint('F')}`, walking]];
   if (state.mode === 'training') tools.push(['restart', () => startLevel(state.level), `Restart  ${keyHint('R')}`]);
   else tools.push(['guide', cycleGuide, `Aim guide: ${state.guide}  ${keyHint('G')}`]);
-  tools.push(['help', () => { state.help = !state.help; }, `Controls  ${keyHint('H')}`]);
+  tools.push(['help', toggleHelp, `Controls  ${keyHint('H')}`]);
   toolbar(tools, W - 18, 18);
   drawMessage();
+  if (walking) drawWalkSticks();
   const ph = state.phase;
   let hint = '';
-  if (ph === 'place') hint = TOUCH ? 'Ball in hand: drag the cue ball inside the D, then Place' : 'Ball in hand: drag the cue ball inside the D (or the arrows), then Enter';
-  else if (ph === 'aim') hint = TOUCH ? 'Swipe sideways to aim, down to look from higher · pull the cue on the right to strike' :'Drag sideways to aim · hold, pull down, push up to strike (or hold Space)';
+  if (walking) hint = TOUCH ? 'Walking: the left finger looks round, the right finger walks · the walk button takes you back' : 'Walking: drag to look round, W A S D to walk · F takes you back';
+  else if (ph === 'place') hint = TOUCH ? 'Ball in hand: drag the cue ball inside the D, then Place' : 'Ball in hand: drag the cue ball inside the D (or the arrows), then Enter';
+  else if (ph === 'aim' && state.human && cam.mode === 'top') hint = 'Top view: for reading the table · go back to the aim view to play';
+  else if (ph === 'aim' && !hintSeen) hint = TOUCH ? 'Swipe sideways to aim, down to look from higher · pull the cue on the right to strike' : 'Drag sideways to aim · hold, pull down, push up to strike (or hold Space)';
   else if (ph === 'aiThink') hint = 'The computer is studying the table';
   if (hint) text(hint, W / 2, state.mode === 'frame' ? H - 106 : H - 28, 14, UI.dim, 'center', FONT, '500');
-  if (ph === 'place') button('Place', W / 2 - 90, H - (state.mode === 'frame' ? 172 : 96) - (TOUCH ? 8 : 0), 180, TOUCH ? 52 : 44, confirmPlace, { primary: true, key: 'Enter' });
+  if (ph === 'place' && !walking) button('Place', W / 2 - 90, H - (state.mode === 'frame' ? 172 : 96) - (TOUCH ? 8 : 0), 180, TOUCH ? 52 : 44, confirmPlace, { primary: true, key: 'Enter' });
   if (ph === 'choice') {
     const three = frame.canReplace, w = three ? 820 : 580, x = (W - w) / 2, y = H / 2 - 84;
+    popIn(state.phaseT || 0, W / 2, y + 84);
     glass(x, y, w, 168, 22);
     text(three ? 'Foul and a miss by the computer' : 'The computer fouled', W / 2, y + 34, 22, UI.text, 'center', FONT, '700');
     const sub = frame.freeBall ? 'Free ball: any ball can stand in for the ball on.' :
@@ -1434,13 +1624,36 @@ function drawPlayHUD() {
       button('It plays again', x + 28 + bw + gap, y + 98, bw, 48, () => choose('again'), { key: '2' });
       button('Put the balls back', x + w - 28 - bw, y + 98, bw, 48, () => choose('replace'), { key: '3' });
     } else button('It plays again', x + w - 278, y + 98, 250, 48, () => choose('again'), { key: '2' });
+    popOut();
   }
   if (state.help) {
     const hx = TOUCH ? 92 : 18, hw = TOUCH ? 640 : 620, hh = 46 + CONTROLS.length * 26, hy = H - hh - (state.mode === 'frame' ? 104 : 54);
+    popIn(state.helpT || 0, hx + hw / 2, hy + hh / 2);
     glass(hx, hy, hw, hh, 18);
     caps('Controls', hx + 20, hy + 22, 12, UI.gold);
     CONTROLS.forEach((c, i) => text(c, hx + 20, hy + 48 + i * 26, 14, UI.text, 'left', FONT, '500'));
+    popOut();
   }
+}
+// ---- Motion: panels fade and grow in; a pressed button flashes -----------------------------
+let lastScene = null, sceneAge = 0; // game seconds since the scene last changed (step())
+/** Before a panel is drawn: age seconds after it appeared (game time), it is still fading in and
+ *  growing from 94% about (cx, cy), over ui_pop_time. Pair with popOut(). */
+function popIn(age, cx, cy) {
+  const k = tune.ui_pop_time > 0 ? Math.max(0, Math.min(1, age / tune.ui_pop_time)) : 1, e = 1 - Math.pow(1 - k, 3);
+  ctx.save(); ctx.globalAlpha *= e;
+  const s = 0.94 + 0.06 * e; ctx.translate(cx, cy); ctx.scale(s, s); ctx.translate(-cx, -cy);
+}
+function popOut() { ctx.restore(); }
+/** After each frame: the flash over the last button pressed. */
+function drawMotion() {
+  if (!pressFx) return;
+  const k = (clock.now() - pressFx.t) / 0.28;
+  if (k >= 1 || k < 0) { pressFx = null; return; }
+  const g = 5 * k, f = pressFx;
+  ctx.save(); ctx.globalAlpha = 0.32 * (1 - k);
+  rrect(f.x - g, f.y - g, f.w + 2 * g, f.h + 2 * g, Math.min(f.h / 2 + g, 28)); ctx.fillStyle = '#ffffff'; ctx.fill();
+  ctx.restore();
 }
 /** A modal card: the screens over play (pause, a failed level, results). */
 function modal(w, h) { ctx.fillStyle = 'rgba(4,6,6,0.55)'; ctx.fillRect(0, 0, W, H); const x = (W - w) / 2, y = (H - h) / 2; glass(x, y, w, h, 24); return [x, y]; }
@@ -1539,12 +1752,15 @@ const scenes = {
       if (pressed('KeyP') || pressed('Escape')) { scene = 'pause'; return; }
       state.t += dt; state.phaseT = (state.phaseT || 0) + dt;
       if (state.msgT > 0) state.msgT -= dt;
-      if (pressed('KeyH')) state.help = !state.help;
+      if (pressed('KeyH')) toggleHelp();
       if (pressed('KeyV')) toggleView();
+      if (pressed('KeyF')) toggleWalk();
+      if (cam.mode === 'walk') walkMove(dt);
+      state.helpT = (state.helpT || 0) + dt;
       if (pressed('KeyG') && state.mode === 'frame') cycleGuide();
       if (pressed('KeyR') && state.mode === 'training') { startLevel(state.level); return; }
       const ph = state.phase;
-      if (ph === 'place') {
+      if (ph === 'place' && cam.mode !== 'walk') { // walking: the keys walk, not the ball in hand
         const k = 0.25 * dt;
         let dx = 0, dy = 0;
         // the overhead view: right is toward the black end, up is the table's left side
@@ -1552,7 +1768,7 @@ const scenes = {
         if (dx || dy) placeCueFree(sim.x[0] + dx, sim.y[0] + dy);
         spinKeys();
         if (pressed('Enter') || pressed('Space')) confirmPlace();
-      } else if (ph === 'aim' && state.human) {
+      } else if (ph === 'aim' && state.human && cam.mode === 'aim') { // the top view and walking: no aiming
         const turn = tune.aim_key_speed * Math.PI / 180 * dt * (shiftHeld() ? tune.aim_fine : 1);
         if (down.has('ArrowLeft')) state.aim += turn;
         if (down.has('ArrowRight')) state.aim -= turn;
@@ -1581,7 +1797,7 @@ const scenes = {
           if (res.place) { sim.place(0, res.place[0], res.place[1]); frame.inHand = false; }
           state.aiFrom = state.aim; state.aiTo = res.intendedAng; state.tipA = res.a; state.tipB = res.b;
           state.phase = 'aiAddress'; state.phaseT = 0; state.aiPull = 0.05;
-          cam.mode = 'aim'; cam.pitchOff = 0.1;
+          if (cam.mode !== 'walk') cam.mode = 'aim'; cam.pitchOff = 0.1;
         }
       } else if (ph === 'aiAddress') {
         const t = state.phaseT, res = aiJob.result;
@@ -1607,6 +1823,7 @@ const scenes = {
     },
     draw() {
       scenes.play.draw(); hudHits = [];
+      popIn(sceneAge, W / 2, H / 2);
       const [x, y] = modal(420, 366), bx = x + 40, bw = 340;
       text('Paused', W / 2, y + 48, 30, UI.text, 'center', FONT, '800');
       button('Resume', bx, y + 86, bw, 50, () => { scene = 'play'; }, { primary: true, icon: 'play', key: 'P' });
@@ -1614,6 +1831,7 @@ const scenes = {
       else button('Concede the frame', bx, y + 148, bw, 50, concede, { icon: 'flag', key: 'K' });
       button('Quit to the menu', bx, y + 210, bw, 50, titleBack, { icon: 'exit', key: 'Q' });
       button(muted ? 'Sound off' : 'Sound on', bx, y + 272, bw, 50, () => setMuted(!muted), { icon: muted ? 'soundOff' : 'soundOn', key: 'M' });
+      popOut();
     },
   },
   over: { // a training level failed: straight back in
@@ -1623,12 +1841,14 @@ const scenes = {
     },
     draw() {
       scenes.play.draw(); hudHits = [];
+      popIn(sceneAge, W / 2, H / 2);
       const [x, y] = modal(600, 250);
       caps(`Level ${state.level + 1}`, W / 2, y + 36, 12, UI.gold, 'center', 2);
       text('Not this time', W / 2, y + 72, 32, UI.text, 'center', FONT, '800');
       wrapLines(state.gained || 'Try again', 520, 16, '500').forEach((l, k) => text(l, W / 2, y + 112 + k * 22, 16, UI.dim, 'center', FONT, '500'));
       button('Try again', x + 40, y + 168, 250, 50, () => startLevel(state.level), { primary: true, icon: 'restart', key: 'R' });
       button('Levels', x + 310, y + 168, 250, 50, toLevels, { icon: 'grid', key: 'L' });
+      popOut();
     },
   },
   results: {
@@ -1642,6 +1862,7 @@ const scenes = {
     },
     draw() {
       scenes.play.draw(); hudHits = [];
+      popIn(sceneAge, W / 2, H / 2);
       const [x, y] = modal(660, 300);
       if (state.mode === 'training') {
         caps(state.def.name, W / 2, y + 38, 12, UI.gold, 'center', 2);
@@ -1661,6 +1882,7 @@ const scenes = {
         button('Menu', x + 110, y + 222, 200, 50, titleBack, { icon: 'exit', key: 'Enter' });
         button('Play again', x + 350, y + 222, 200, 50, () => startFrame(LP.LEVELS.indexOf(state.aiLevel), 1 - (state.breaker || 0)), { primary: true, icon: 'restart', key: 'R' });
       }
+      popOut();
     },
   },
 };
@@ -1683,8 +1905,10 @@ function spinBalls() { // turn each ball's mesh by its spin over the step, so th
 }
 
 // ---- Loop: fixed step, frame time clamped ---------------------------------------------
+function toggleHelp() { state.help = !state.help; state.helpT = 0; }
 function step() {
   soundsThisStep = 0;
+  if (scene !== lastScene) { lastScene = scene; sceneAge = 0; } else sceneAge += STEP;
   if (pressed('KeyM')) { setMuted(!muted); hit.delete('KeyM'); }
   if (!(upright() && scene === 'play')) scenes[scene].update(STEP); // held upright, the game waits
   hit.clear();
@@ -1698,7 +1922,7 @@ function tick() {
   drawFrame();
 }
 const upright = () => TOUCH && innerHeight > innerWidth;
-function drawFrame() { hudHits = []; render3D(); scenes[scene].draw(); if (upright()) drawRotate(); }
+function drawFrame() { hudHits = []; render3D(); scenes[scene].draw(); drawMotion(); if (upright()) drawRotate(); }
 function frameLoop() { tick(); requestAnimationFrame(frameLoop); }
 // A headless browser on a time budget runs timers but almost no animation frames: a timer
 // ticks when no frame has come for 100 ms on a visible page; a hidden tab stays paused.
