@@ -76,6 +76,7 @@ const canvas = document.getElementById('game');
 const glCanvas = document.getElementById('gl');
 const ctx = canvas.getContext('2d');
 let view = { s: 1, left: 0, top: 0 };
+let hudScale = 1; // the HUD canvas's pixels per logical pixel (fit()); every frame draws from it
 const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: !CHEAP });
 renderer.setPixelRatio(CHEAP ? 0.5 : Math.min(2, devicePixelRatio || 1)); // full resolution, capped at 2x
 renderer.shadowMap.enabled = !CHEAP;
@@ -91,10 +92,19 @@ function fit() { // fills the window at any size and pixel ratio
   const left = Math.max(0, Math.floor((innerWidth - cw) / 2)), top = Math.max(0, Math.floor((innerHeight - ch) / 2));
   for (const c of [canvas, glCanvas]) { c.style.width = cw + 'px'; c.style.height = ch + 'px'; c.style.left = left + 'px'; c.style.top = top + 'px'; }
   renderer.setSize(cw, ch, false);
-  ctx.setTransform(r, 0, 0, r, 0, 0); ctx.imageSmoothingEnabled = true;
+  hudScale = r; ctx.setTransform(r, 0, 0, r, 0, 0); ctx.imageSmoothingEnabled = true;
   view = { s: k, left, top };
 }
 addEventListener('resize', fit); fit();
+// A phone browser can drop a canvas (low graphics memory, another app, the screen off) and give it
+// back blank with its scale lost: size everything again then, and when the page comes back.
+canvas.addEventListener('contextrestored', fit);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fit(); });
+addEventListener('fullscreenchange', fit);
+// The last error, kept so the pause menu can show it (a frame that fails never takes the HUD with it).
+let lastError = '';
+function noteError(err) { lastError = String((err && err.message) || err).slice(0, 120); try { console.error(err); } catch (_) { /* none */ } }
+addEventListener('error', e => noteError(e.error || e.message));
 function clear(c) { ctx.fillStyle = c; ctx.fillRect(0, 0, W, H); }
 function text(s, x, y, size, c, align = 'center', font = FONT, weight = '') {
   ctx.fillStyle = c; ctx.font = `${weight} ${size * FONT_BOOST}px ${font}`; ctx.textAlign = align;
@@ -408,7 +418,7 @@ const holeMat = new THREE.MeshBasicMaterial({ color: 0x020202, side: THREE.Doubl
 
 let tableGroup = null, clothTex = null;
 function clothTexture() {
-  const BX = table.HL + table.CW, BY = table.HW + table.CW, TW = CHEAP ? 1024 : renderer.capabilities.maxTextureSize >= 4096 ? 4096 : 2048, TH = TW / 2;
+  const BX = table.HL + table.CW, BY = table.HW + table.CW, TW = CHEAP ? 1024 : TOUCH || renderer.capabilities.maxTextureSize < 4096 ? 2048 : 4096, TH = TW / 2; // a phone: 2048, a quarter of the memory
   return canvasTexture(TW, TH, (g, w, h) => {
     const px = x => (x + BX) / (2 * BX) * w, py = y => (BY - y) / (2 * BY) * h, s = w / (2 * BX);
     g.fillStyle = '#1b7a3c'; g.fillRect(0, 0, w, h);
@@ -1831,6 +1841,7 @@ const scenes = {
       else button('Concede the frame', bx, y + 148, bw, 50, concede, { icon: 'flag', key: 'K' });
       button('Quit to the menu', bx, y + 210, bw, 50, titleBack, { icon: 'exit', key: 'Q' });
       button(muted ? 'Sound off' : 'Sound on', bx, y + 272, bw, 50, () => setMuted(!muted), { icon: muted ? 'soundOff' : 'soundOn', key: 'M' });
+      if (lastError) text(`Last error: ${lastError}`, W / 2, y + 366 + 22, 12, UI.faint, 'center', FONT, '500');
       popOut();
     },
   },
@@ -1922,11 +1933,23 @@ function tick() {
   drawFrame();
 }
 const upright = () => TOUCH && innerHeight > innerWidth;
-function drawFrame() { hudHits = []; render3D(); scenes[scene].draw(); drawMotion(); if (upright()) drawRotate(); }
-function frameLoop() { tick(); requestAnimationFrame(frameLoop); }
+/** Each frame draws the HUD from a clean state at its scale, whatever the last frame or the
+ *  browser left behind; a frame that fails is noted, and the next one starts from a reset canvas. */
+let drawBroke = false;
+function hudBase() {
+  if (drawBroke) { drawBroke = false; if (ctx.reset) ctx.reset(); else canvas.width = canvas.width; }
+  ctx.setTransform(hudScale, 0, 0, hudScale, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; ctx.letterSpacing = '0px'; ctx.setLineDash([]);
+}
+function drawFrame() {
+  hudBase();
+  try { hudHits = []; render3D(); scenes[scene].draw(); drawMotion(); if (upright()) drawRotate(); }
+  catch (err) { drawBroke = true; noteError(err); }
+}
+function frameLoop() { try { tick(); } catch (err) { noteError(err); } requestAnimationFrame(frameLoop); } // the loop never stops
 // A headless browser on a time budget runs timers but almost no animation frames: a timer
 // ticks when no frame has come for 100 ms on a visible page; a hidden tab stays paused.
-function timer() { if (document.visibilityState === 'visible' && clock.now() - last > 0.1) tick(); }
+function timer() { if (document.visibilityState === 'visible' && clock.now() - last > 0.1) { try { tick(); } catch (err) { noteError(err); } } }
 
 // ---- What a check can read and drive (?manual=1 stops the loop; players never see it) ----
 window.game = {
